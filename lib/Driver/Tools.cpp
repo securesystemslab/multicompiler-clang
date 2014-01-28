@@ -26,6 +26,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Config/config.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -3101,6 +3102,20 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
         CmdArgs.push_back("-arm-no-strict-align");
       }
     }
+  }
+
+  // Translate -frandom-seed to seed the LLVM RNG
+  if (Args.hasArg(options::OPT_frandom_seed_EQ)) {
+    StringRef seed = Args.getLastArgValue(options::OPT_frandom_seed_EQ);
+    CmdArgs.push_back("-backend-option");
+    CmdArgs.push_back(Args.MakeArgString("-rng-seed=" + seed));
+  }
+
+  if (Args.hasArg(options::OPT_fdiversify)) {
+    CmdArgs.push_back("-nop-insertion");
+
+    CmdArgs.push_back("-backend-option");
+    CmdArgs.push_back("-sched-randomize");
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
