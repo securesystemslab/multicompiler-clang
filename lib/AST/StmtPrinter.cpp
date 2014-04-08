@@ -70,6 +70,7 @@ namespace  {
     void PrintCallArgs(CallExpr *E);
     void PrintRawSEHExceptHandler(SEHExceptStmt *S);
     void PrintRawSEHFinallyStmt(SEHFinallyStmt *S);
+    void PrintOMPExecutableDirective(OMPExecutableDirective *S);
 
     void PrintExpr(Expr *E) {
       if (E)
@@ -89,7 +90,7 @@ namespace  {
           return;
       else StmtVisitor<StmtPrinter>::Visit(S);
     }
-    
+
     void VisitStmt(Stmt *Node) LLVM_ATTRIBUTE_UNUSED {
       Indent() << "<<unknown stmt type>>\n";
     }
@@ -113,9 +114,8 @@ namespace  {
 /// with no newline after the }.
 void StmtPrinter::PrintRawCompoundStmt(CompoundStmt *Node) {
   OS << "{\n";
-  for (CompoundStmt::body_iterator I = Node->body_begin(), E = Node->body_end();
-       I != E; ++I)
-    PrintStmt(*I);
+  for (auto *I : Node->body())
+    PrintStmt(I);
 
   Indent() << "}";
 }
@@ -125,11 +125,7 @@ void StmtPrinter::PrintRawDecl(Decl *D) {
 }
 
 void StmtPrinter::PrintRawDeclStmt(const DeclStmt *S) {
-  DeclStmt::const_decl_iterator Begin = S->decl_begin(), End = S->decl_end();
-  SmallVector<Decl*, 2> Decls;
-  for ( ; Begin != End; ++Begin)
-    Decls.push_back(*Begin);
-
+  SmallVector<Decl*, 2> Decls(S->decls());
   Decl::printGroup(Decls.data(), Decls.size(), OS, Policy, IndentLevel);
 }
 
@@ -593,15 +589,35 @@ void StmtPrinter::VisitSEHFinallyStmt(SEHFinallyStmt *Node) {
 namespace {
 class OMPClausePrinter : public OMPClauseVisitor<OMPClausePrinter> {
   raw_ostream &OS;
+  const PrintingPolicy &Policy;
   /// \brief Process clauses with list of variables.
   template <typename T>
   void VisitOMPClauseList(T *Node, char StartSym);
 public:
-  OMPClausePrinter(raw_ostream &OS) : OS(OS) { }
+  OMPClausePrinter(raw_ostream &OS, const PrintingPolicy &Policy)
+    : OS(OS), Policy(Policy) { }
 #define OPENMP_CLAUSE(Name, Class)                              \
   void Visit##Class(Class *S);
 #include "clang/Basic/OpenMPKinds.def"
 };
+
+void OMPClausePrinter::VisitOMPIfClause(OMPIfClause *Node) {
+  OS << "if(";
+  Node->getCondition()->printPretty(OS, 0, Policy, 0);
+  OS << ")";
+}
+
+void OMPClausePrinter::VisitOMPNumThreadsClause(OMPNumThreadsClause *Node) {
+  OS << "num_threads(";
+  Node->getNumThreads()->printPretty(OS, 0, Policy, 0);
+  OS << ")";
+}
+
+void OMPClausePrinter::VisitOMPSafelenClause(OMPSafelenClause *Node) {
+  OS << "safelen(";
+  Node->getSafelen()->printPretty(OS, 0, Policy, 0);
+  OS << ")";
+}
 
 void OMPClausePrinter::VisitOMPDefaultClause(OMPDefaultClause *Node) {
   OS << "default("
@@ -613,9 +629,15 @@ template<typename T>
 void OMPClausePrinter::VisitOMPClauseList(T *Node, char StartSym) {
   for (typename T::varlist_iterator I = Node->varlist_begin(),
                                     E = Node->varlist_end();
-         I != E; ++I)
-    OS << (I == Node->varlist_begin() ? StartSym : ',')
-       << *cast<NamedDecl>(cast<DeclRefExpr>(*I)->getDecl());
+         I != E; ++I) {
+    if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(*I)) {
+      OS << (I == Node->varlist_begin() ? StartSym : ',');
+      cast<NamedDecl>(DRE->getDecl())->printQualifiedName(OS);
+    } else {
+      OS << (I == Node->varlist_begin() ? StartSym : ',');
+      (*I)->printPretty(OS, 0, Policy, 0);
+    }
+  }
 }
 
 void OMPClausePrinter::VisitOMPPrivateClause(OMPPrivateClause *Node) {
@@ -642,17 +664,23 @@ void OMPClausePrinter::VisitOMPSharedClause(OMPSharedClause *Node) {
   }
 }
 
+void OMPClausePrinter::VisitOMPCopyinClause(OMPCopyinClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "copyin";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
 }
 
 //===----------------------------------------------------------------------===//
 //  OpenMP directives printing methods
 //===----------------------------------------------------------------------===//
 
-void StmtPrinter::VisitOMPParallelDirective(OMPParallelDirective *Node) {
-  Indent() << "#pragma omp parallel ";
-
-  OMPClausePrinter Printer(OS);
-  ArrayRef<OMPClause *> Clauses = Node->clauses();
+void StmtPrinter::PrintOMPExecutableDirective(OMPExecutableDirective *S) {
+  OMPClausePrinter Printer(OS, Policy);
+  ArrayRef<OMPClause *> Clauses = S->clauses();
   for (ArrayRef<OMPClause *>::iterator I = Clauses.begin(), E = Clauses.end();
        I != E; ++I)
     if (*I && !(*I)->isImplicit()) {
@@ -660,13 +688,24 @@ void StmtPrinter::VisitOMPParallelDirective(OMPParallelDirective *Node) {
       OS << ' ';
     }
   OS << "\n";
-  if (Node->getAssociatedStmt()) {
-    assert(isa<CapturedStmt>(Node->getAssociatedStmt()) &&
+  if (S->getAssociatedStmt()) {
+    assert(isa<CapturedStmt>(S->getAssociatedStmt()) &&
            "Expected captured statement!");
-    Stmt *CS = cast<CapturedStmt>(Node->getAssociatedStmt())->getCapturedStmt();
+    Stmt *CS = cast<CapturedStmt>(S->getAssociatedStmt())->getCapturedStmt();
     PrintStmt(CS);
   }
 }
+
+void StmtPrinter::VisitOMPParallelDirective(OMPParallelDirective *Node) {
+  Indent() << "#pragma omp parallel ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPSimdDirective(OMPSimdDirective *Node) {
+  Indent() << "#pragma omp simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
 //===----------------------------------------------------------------------===//
 //  Expr printing methods.
 //===----------------------------------------------------------------------===//
@@ -716,9 +755,11 @@ void StmtPrinter::VisitObjCIvarRefExpr(ObjCIvarRefExpr *Node) {
 void StmtPrinter::VisitObjCPropertyRefExpr(ObjCPropertyRefExpr *Node) {
   if (Node->isSuperReceiver())
     OS << "super.";
-  else if (Node->getBase()) {
+  else if (Node->isObjectReceiver() && Node->getBase()) {
     PrintExpr(Node->getBase());
     OS << ".";
+  } else if (Node->isClassReceiver() && Node->getClassReceiver()) {
+    OS << Node->getClassReceiver()->getName() << ".";
   }
 
   if (Node->isImplicitProperty())
@@ -1286,6 +1327,12 @@ void StmtPrinter::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *Node) {
 }
 
 void StmtPrinter::VisitCXXMemberCallExpr(CXXMemberCallExpr *Node) {
+  // If we have a conversion operator call only print the argument.
+  CXXMethodDecl *MD = Node->getMethodDecl();
+  if (MD && isa<CXXConversionDecl>(MD)) {
+    PrintExpr(Node->getImplicitObjectArgument());
+    return;
+  }
   VisitCallExpr(cast<CallExpr>(Node));
 }
 
@@ -1497,16 +1544,14 @@ void StmtPrinter::VisitLambdaExpr(LambdaExpr *Node) {
     OS << " (";
     CXXMethodDecl *Method = Node->getCallOperator();
     NeedComma = false;
-    for (CXXMethodDecl::param_iterator P = Method->param_begin(),
-                                    PEnd = Method->param_end();
-         P != PEnd; ++P) {
+    for (auto P : Method->params()) {
       if (NeedComma) {
         OS << ", ";
       } else {
         NeedComma = true;
       }
-      std::string ParamStr = (*P)->getNameAsString();
-      (*P)->getOriginalType().print(OS, Policy, ParamStr);
+      std::string ParamStr = P->getNameAsString();
+      P->getOriginalType().print(OS, Policy, ParamStr);
     }
     if (Method->isVariadic()) {
       if (NeedComma)

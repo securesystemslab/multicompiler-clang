@@ -1,10 +1,6 @@
-// RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %itanium_abi_triple
-// RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %itanium_abi_triple
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %itanium_abi_triple
-
-// RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %ms_abi_triple -DMSABI
-// RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %ms_abi_triple -DMSABI
-// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors -triple %ms_abi_triple -DMSABI
+// RUN: %clang_cc1 -std=c++98 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++11 %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
+// RUN: %clang_cc1 -std=c++1y %s -verify -fexceptions -fcxx-exceptions -pedantic-errors
 
 // PR13819 -- __SIZE_TYPE__ is incompatible.
 typedef __SIZE_TYPE__ size_t; // expected-error 0-1 {{extension}}
@@ -220,8 +216,22 @@ namespace dr221 { // dr221: yes
   }
 }
 
-// dr222 is a mystery -- it lists no changes to the standard, and yet was
-// apparently both voted into the WP and acted upon by the editor.
+namespace dr222 { // dr222: dup 637
+  void f(int a, int b, int c, int *x) {
+#pragma clang diagnostic push
+#pragma clang diagnostic warning "-Wunsequenced"
+    void((a += b) += c);
+    void((a += b) + (a += c)); // expected-warning {{multiple unsequenced modifications to 'a'}}
+
+    x[a++] = a; // expected-warning {{unsequenced modification and access to 'a'}}
+
+    a = b = 0; // ok, read and write of 'b' are sequenced
+
+    a = (b = a++); // expected-warning {{multiple unsequenced modifications to 'a'}}
+    a = (b = ++a);
+#pragma clang diagnostic pop
+  }
+}
 
 // dr223: na
 
@@ -365,6 +375,13 @@ namespace dr229 { // dr229: yes
   template<typename T> void f();
   template<typename T> void f<T*>() {} // expected-error {{function template partial specialization}}
   template<> void f<int>() {}
+}
+
+namespace dr230 { // dr230: yes
+  struct S {
+    S() { f(); } // expected-warning {{call to pure virtual member function}}
+    virtual void f() = 0; // expected-note {{declared here}}
+  };
 }
 
 namespace dr231 { // dr231: yes
@@ -538,30 +555,17 @@ namespace dr250 { // dr250: yes
 
 namespace dr252 { // dr252: yes
   struct A {
-#ifdef MSABI
-    // expected-note@+2 {{found}}
-#endif
     void operator delete(void*); // expected-note {{found}}
   };
   struct B {
-#ifdef MSABI
-    // expected-note@+2 {{found}}
-#endif
     void operator delete(void*); // expected-note {{found}}
   };
   struct C : A, B {
-#ifdef MSABI
-    // expected-error@+2 {{'operator delete' found in multiple base classes}}
-#endif
     virtual ~C();
   };
   C::~C() {} // expected-error {{'operator delete' found in multiple base classes}}
 
   struct D {
-#ifdef MSABI
-    // expected-note@+3 {{here}} MSABI
-    // expected-error@+3 {{no suitable member 'operator delete'}}
-#endif
     void operator delete(void*, int); // expected-note {{here}}
     virtual ~D();
   };
@@ -577,10 +581,6 @@ namespace dr252 { // dr252: yes
   struct F {
     // If both functions are available, the first one is a placement delete.
     void operator delete(void*, size_t);
-#ifdef MSABI
-    // expected-note@+3 {{here}}
-    // expected-error@+3 {{attempt to use a deleted function}}
-#endif
     void operator delete(void*) = delete; // expected-error 0-1{{extension}} expected-note {{here}}
     virtual ~F();
   };

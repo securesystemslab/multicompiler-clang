@@ -124,21 +124,23 @@ class DeadStoreObs : public LiveVariables::Observer {
   const CFG &cfg;
   ASTContext &Ctx;
   BugReporter& BR;
+  const CheckerBase *Checker;
   AnalysisDeclContext* AC;
   ParentMap& Parents;
   llvm::SmallPtrSet<const VarDecl*, 20> Escaped;
-  OwningPtr<ReachableCode> reachableCode;
+  std::unique_ptr<ReachableCode> reachableCode;
   const CFGBlock *currentBlock;
-  OwningPtr<llvm::DenseSet<const VarDecl *> > InEH;
+  std::unique_ptr<llvm::DenseSet<const VarDecl *>> InEH;
 
   enum DeadStoreKind { Standard, Enclosing, DeadIncrement, DeadInit };
 
 public:
-  DeadStoreObs(const CFG &cfg, ASTContext &ctx,
-               BugReporter& br, AnalysisDeclContext* ac, ParentMap& parents,
-               llvm::SmallPtrSet<const VarDecl*, 20> &escaped)
-    : cfg(cfg), Ctx(ctx), BR(br), AC(ac), Parents(parents),
-      Escaped(escaped), currentBlock(0) {}
+  DeadStoreObs(const CFG &cfg, ASTContext &ctx, BugReporter &br,
+               const CheckerBase *checker, AnalysisDeclContext *ac,
+               ParentMap &parents,
+               llvm::SmallPtrSet<const VarDecl *, 20> &escaped)
+      : cfg(cfg), Ctx(ctx), BR(br), Checker(checker), AC(ac), Parents(parents),
+        Escaped(escaped), currentBlock(0) {}
 
   virtual ~DeadStoreObs() {}
 
@@ -199,7 +201,8 @@ public:
         return;
     }
 
-    BR.EmitBasicReport(AC->getDecl(), BugType, "Dead store", os.str(), L, R);
+    BR.EmitBasicReport(AC->getDecl(), Checker, BugType, "Dead store", os.str(),
+                       L, R);
   }
 
   void CheckVarDecl(const VarDecl *VD, const Expr *Ex, const Expr *Val,
@@ -252,8 +255,8 @@ public:
     return false;
   }
 
-  virtual void observeStmt(const Stmt *S, const CFGBlock *block,
-                           const LiveVariables::LivenessValues &Live) {
+  void observeStmt(const Stmt *S, const CFGBlock *block,
+                   const LiveVariables::LivenessValues &Live) override {
 
     currentBlock = block;
     
@@ -310,10 +313,8 @@ public:
     else if (const DeclStmt *DS = dyn_cast<DeclStmt>(S))
       // Iterate through the decls.  Warn if any initializers are complex
       // expressions that are not live (never used).
-      for (DeclStmt::const_decl_iterator DI=DS->decl_begin(), DE=DS->decl_end();
-           DI != DE; ++DI) {
-
-        VarDecl *V = dyn_cast<VarDecl>(*DI);
+      for (const auto *DI : DS->decls()) {
+        const auto *V = dyn_cast<VarDecl>(DI);
 
         if (!V)
           continue;
@@ -439,7 +440,7 @@ public:
       ParentMap &pmap = mgr.getParentMap(D);
       FindEscaped FS;
       cfg.VisitBlockStmts(FS);
-      DeadStoreObs A(cfg, BR.getContext(), BR, AC, pmap, FS.Escaped);
+      DeadStoreObs A(cfg, BR.getContext(), BR, this, AC, pmap, FS.Escaped);
       L->runOnAllBlocks(A);
     }
   }

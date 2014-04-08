@@ -81,9 +81,7 @@ AnalysisDeclContextManager::AnalysisDeclContextManager(bool useUnoptimizedCFG,
 }
 
 void AnalysisDeclContextManager::clear() {
-  for (ContextMap::iterator I = Contexts.begin(), E = Contexts.end(); I!=E; ++I)
-    delete I->second;
-  Contexts.clear();
+  llvm::DeleteContainerSeconds(Contexts);
 }
 
 static BodyFarm &getBodyFarm(ASTContext &C) {
@@ -135,9 +133,8 @@ const ImplicitParamDecl *AnalysisDeclContext::getSelfDecl() const {
     return MD->getSelfDecl();
   if (const BlockDecl *BD = dyn_cast<BlockDecl>(D)) {
     // See if 'self' was captured by the block.
-    for (BlockDecl::capture_const_iterator it = BD->capture_begin(),
-         et = BD->capture_end(); it != et; ++it) {
-      const VarDecl *VD = it->getVariable();
+    for (const auto &I : BD->captures()) {
+      const VarDecl *VD = I.getVariable();
       if (VD->getName() == "self")
         return dyn_cast<ImplicitParamDecl>(VD);
     }    
@@ -244,10 +241,8 @@ ParentMap &AnalysisDeclContext::getParentMap() {
   if (!PM) {
     PM.reset(new ParentMap(getBody()));
     if (const CXXConstructorDecl *C = dyn_cast<CXXConstructorDecl>(getDecl())) {
-      for (CXXConstructorDecl::init_const_iterator I = C->init_begin(),
-                                                   E = C->init_end();
-           I != E; ++I) {
-        PM->addStmt((*I)->getInit());
+      for (const auto *I : C->inits()) {
+        PM->addStmt(I->getInit());
       }
     }
     if (builtCFG)
@@ -463,11 +458,6 @@ public:
                             BumpVectorContext &bc)
   : BEVals(bevals), BC(bc) {}
 
-  bool IsTrackedDecl(const VarDecl *VD) {
-    const DeclContext *DC = VD->getDeclContext();
-    return IgnoredContexts.count(DC) == 0;
-  }
-
   void VisitStmt(Stmt *S) {
     for (Stmt::child_range I = S->children(); I; ++I)
       if (Stmt *child = *I)
@@ -515,9 +505,8 @@ static DeclVec* LazyInitializeReferencedDecls(const BlockDecl *BD,
   new (BV) DeclVec(BC, 10);
 
   // Go through the capture list.
-  for (BlockDecl::capture_const_iterator CI = BD->capture_begin(),
-       CE = BD->capture_end(); CI != CE; ++CI) {
-    BV->push_back(CI->getVariable(), BC);
+  for (const auto &CI : BD->captures()) {
+    BV->push_back(CI.getVariable(), BC);
   }
 
   // Find the referenced global/static variables.
@@ -557,15 +546,13 @@ AnalysisDeclContext::~AnalysisDeclContext() {
   // Release the managed analyses.
   if (ManagedAnalyses) {
     ManagedAnalysisMap *M = (ManagedAnalysisMap*) ManagedAnalyses;
-    for (ManagedAnalysisMap::iterator I = M->begin(), E = M->end(); I!=E; ++I)
-      delete I->second;  
+    llvm::DeleteContainerSeconds(*M);
     delete M;
   }
 }
 
 AnalysisDeclContextManager::~AnalysisDeclContextManager() {
-  for (ContextMap::iterator I = Contexts.begin(), E = Contexts.end(); I!=E; ++I)
-    delete I->second;
+  llvm::DeleteContainerSeconds(Contexts);
 }
 
 LocationContext::~LocationContext() {}

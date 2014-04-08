@@ -903,7 +903,6 @@ VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
   CGF.EmitBlock(LHSBlock);
   Cnt.beginRegion(Builder);
   Visit(E->getTrueExpr());
-  Cnt.adjustForControlFlow();
   eval.end(CGF);
 
   assert(CGF.HaveInsertPoint() && "expression evaluation ended with no IP!");
@@ -917,13 +916,10 @@ VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
 
   eval.begin(CGF);
   CGF.EmitBlock(RHSBlock);
-  Cnt.beginElseRegion();
   Visit(E->getFalseExpr());
-  Cnt.adjustForControlFlow();
   eval.end(CGF);
 
   CGF.EmitBlock(ContBlock);
-  Cnt.applyAdjustmentsToRegion();
 }
 
 void AggExprEmitter::VisitChooseExpr(const ChooseExpr *CE) {
@@ -1145,9 +1141,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
 #ifndef NDEBUG
       // Make sure that it's really an empty and not a failure of
       // semantic analysis.
-      for (RecordDecl::field_iterator Field = record->field_begin(),
-                                   FieldEnd = record->field_end();
-           Field != FieldEnd; ++Field)
+      for (const auto *Field : record->fields())
         assert(Field->isUnnamedBitfield() && "Only unnamed bitfields allowed");
 #endif
       return;
@@ -1176,9 +1170,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
   // Here we iterate over the fields; this makes it simpler to both
   // default-initialize fields and skip over unnamed fields.
   unsigned curInitIndex = 0;
-  for (RecordDecl::field_iterator field = record->field_begin(),
-                               fieldEnd = record->field_end();
-       field != fieldEnd; ++field) {
+  for (const auto *field : record->fields()) {
     // We're done once we hit the flexible array member.
     if (field->getType()->isIncompleteArrayType())
       break;
@@ -1195,7 +1187,7 @@ void AggExprEmitter::VisitInitListExpr(InitListExpr *E) {
       break;
     
 
-    LValue LV = CGF.EmitLValueForFieldInitialization(DestLV, *field);
+    LValue LV = CGF.EmitLValueForFieldInitialization(DestLV, field);
     // We never generate write-barries for initialized fields.
     LV.setNonGC(true);
     
@@ -1272,8 +1264,7 @@ static CharUnits GetNumNonZeroBytesInInit(const Expr *E, CodeGenFunction &CGF) {
       CharUnits NumNonZeroBytes = CharUnits::Zero();
       
       unsigned ILEElement = 0;
-      for (RecordDecl::field_iterator Field = SD->field_begin(),
-           FieldEnd = SD->field_end(); Field != FieldEnd; ++Field) {
+      for (const auto *Field : SD->fields()) {
         // We're done once we hit the flexible array member or run out of
         // InitListExpr elements.
         if (Field->getType()->isIncompleteArrayType() ||

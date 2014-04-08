@@ -50,6 +50,7 @@
 //  L   -> long (e.g. Li for 'long int')
 //  LL  -> long long
 //  LLL -> __int128_t (e.g. LLLi)
+//  W   -> int64_t
 //  S   -> signed
 //  U   -> unsigned
 //  I   -> Required to constant fold to an integer constant expression.
@@ -444,6 +445,7 @@ BUILTIN(__builtin_strstr, "c*cC*cC*", "nF")
 BUILTIN(__builtin_return_address, "v*IUi", "n")
 BUILTIN(__builtin_extract_return_addr, "v*v*", "n")
 BUILTIN(__builtin_frame_address, "v*IUi", "n")
+BUILTIN(__builtin___clear_cache, "vc*c*", "n")
 BUILTIN(__builtin_flt_rounds, "i", "nc")
 BUILTIN(__builtin_setjmp, "iv**", "j")
 BUILTIN(__builtin_longjmp, "vv**i", "r")
@@ -679,6 +681,11 @@ LANGBUILTIN(_alloca,      "v*z", "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__assume,     "vb",  "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__noop,       "v.",  "n", ALL_MS_LANGUAGES)
 LANGBUILTIN(__debugbreak, "v",   "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(__va_start,   "vc**.", "nt", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedCompareExchange, "LiLiD*LiLi", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedIncrement, "LiLiD*", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedDecrement, "LiLiD*", "n", ALL_MS_LANGUAGES)
+LANGBUILTIN(_InterlockedExchangeAdd, "LiLiD*Li", "n", ALL_MS_LANGUAGES)
 
 // C99 library functions
 // C99 stdlib.h

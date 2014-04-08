@@ -138,6 +138,8 @@ def split_dwarf : Flag<["-"], "split-dwarf">,
   HelpText<"Split out the dwarf .dwo sections">;
 def gnu_pubnames : Flag<["-"], "gnu-pubnames">,
   HelpText<"Emit newer GNU style pubnames">;
+def arange_sections : Flag<["-"], "arange_sections">,
+  HelpText<"Emit DWARF .debug_arange sections">;
 def fforbid_guard_variables : Flag<["-"], "fforbid-guard-variables">,
   HelpText<"Emit an error if a C++ static local initializer would need a guard variable">;
 def no_implicit_float : Flag<["-"], "no-implicit-float">,
@@ -190,6 +192,8 @@ def mlimit_float_precision : Separate<["-"], "mlimit-float-precision">,
   HelpText<"Limit float precision to the given value">;
 def mno_exec_stack : Flag<["-"], "mnoexecstack">,
   HelpText<"Mark the file as not needing an executable stack">;
+def compress_debug_sections : Flag<["-"], "compress-debug-sections">,
+    HelpText<"Compress DWARF debug sections using zlib">;
 def split_stacks : Flag<["-"], "split-stacks">,
   HelpText<"Try to use a split stack if possible.">;
 def mno_zero_initialized_in_bss : Flag<["-"], "mno-zero-initialized-in-bss">,
@@ -223,6 +227,8 @@ def dependent_lib : Joined<["--"], "dependent-lib=">,
 
 def sys_header_deps : Flag<["-"], "sys-header-deps">,
   HelpText<"Include system headers in dependency output">;
+def module_file_deps : Flag<["-"], "module-file-deps">,
+  HelpText<"Include module files in dependency output">;
 def header_include_file : Separate<["-"], "header-include-file">,
   HelpText<"Filename (or -) to write header include output to">;
 def show_includes : Flag<["--"], "show-includes">,
@@ -399,8 +405,6 @@ def fblocks_runtime_optional : Flag<["-"], "fblocks-runtime-optional">,
   HelpText<"Weakly link in the blocks runtime">;
 def fsjlj_exceptions : Flag<["-"], "fsjlj-exceptions">,
   HelpText<"Use SjLj style exceptions">;
-def fhidden_weak_vtables : Flag<["-"], "fhidden-weak-vtables">,
-  HelpText<"Generate weak vtables and RTTI with hidden visibility">;
 def main_file_name : Separate<["-"], "main-file-name">,
   HelpText<"Main file name to use for debug info">;
 def split_dwarf_file : Separate<["-"], "split-dwarf-file">,
@@ -478,6 +482,8 @@ def fsized_deallocation : Flag<["-"], "fsized-deallocation">,
   HelpText<"Enable C++1y sized global deallocation functions">;
 def fobjc_subscripting_legacy_runtime : Flag<["-"], "fobjc-subscripting-legacy-runtime">,
   HelpText<"Allow Objective-C array and dictionary subscripting in legacy runtime">;
+def vtordisp_mode_EQ : Joined<["-"], "vtordisp-mode=">,
+  HelpText<"Control vtordisp placement on win32 targets">;
 
 //===----------------------------------------------------------------------===//
 // Header Search Options
@@ -506,14 +512,6 @@ def internal_externc_isystem : JoinedOrSeparate<["-"], "internal-externc-isystem
            "implicit extern \"C\" semantics; these are assumed to not be "
            "user-provided and are used to model system and standard headers' "
            "paths.">;
-def isystem_prefix : JoinedOrSeparate<["-"], "isystem-prefix">,
-  MetaVarName<"<prefix>">,
-  HelpText<"Treat all #include paths starting with <prefix> as including a "
-           "system header.">;
-def ino_system_prefix : JoinedOrSeparate<["-"], "ino-system-prefix">,
-  MetaVarName<"<prefix>">,
-  HelpText<"Treat all #include paths starting with <prefix> as not including a "
-           "system header.">;
 
 //===----------------------------------------------------------------------===//
 // Preprocessor Options

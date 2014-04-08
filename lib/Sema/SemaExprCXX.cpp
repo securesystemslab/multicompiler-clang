@@ -1188,14 +1188,15 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
   else if (Initializer && isa<ImplicitValueInitExpr>(Initializer))
     HaveCompleteInit = true;
 
-  // C++11 [decl.spec.auto]p6. Deduce the type which 'auto' stands in for.
+  // C++11 [dcl.spec.auto]p6. Deduce the type which 'auto' stands in for.
   if (TypeMayContainAuto && AllocType->isUndeducedType()) {
     if (initStyle == CXXNewExpr::NoInit || NumInits == 0)
       return ExprError(Diag(StartLoc, diag::err_auto_new_requires_ctor_arg)
                        << AllocType << TypeRange);
-    if (initStyle == CXXNewExpr::ListInit)
+    if (initStyle == CXXNewExpr::ListInit ||
+        (NumInits == 1 && isa<InitListExpr>(Inits[0])))
       return ExprError(Diag(Inits[0]->getLocStart(),
-                            diag::err_auto_new_requires_parens)
+                            diag::err_auto_new_list_init)
                        << AllocType << TypeRange);
     if (NumInits > 1) {
       Expr *FirstBad = Inits[1];
@@ -1279,43 +1280,43 @@ Sema::BuildCXXNew(SourceRange Range, bool UseGlobal,
         SizeConvertDiagnoser(Expr *ArraySize)
             : ICEConvertDiagnoser(/*AllowScopedEnumerations*/false, false, false),
               ArraySize(ArraySize) {}
-  
-        virtual SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
-                                                     QualType T) {
+
+        SemaDiagnosticBuilder diagnoseNotInt(Sema &S, SourceLocation Loc,
+                                             QualType T) override {
           return S.Diag(Loc, diag::err_array_size_not_integral)
                    << S.getLangOpts().CPlusPlus11 << T;
         }
-  
-        virtual SemaDiagnosticBuilder diagnoseIncomplete(
-            Sema &S, SourceLocation Loc, QualType T) {
+
+        SemaDiagnosticBuilder diagnoseIncomplete(
+            Sema &S, SourceLocation Loc, QualType T) override {
           return S.Diag(Loc, diag::err_array_size_incomplete_type)
                    << T << ArraySize->getSourceRange();
         }
-  
-        virtual SemaDiagnosticBuilder diagnoseExplicitConv(
-            Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
+
+        SemaDiagnosticBuilder diagnoseExplicitConv(
+            Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) override {
           return S.Diag(Loc, diag::err_array_size_explicit_conversion) << T << ConvTy;
         }
-  
-        virtual SemaDiagnosticBuilder noteExplicitConv(
-            Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
+
+        SemaDiagnosticBuilder noteExplicitConv(
+            Sema &S, CXXConversionDecl *Conv, QualType ConvTy) override {
           return S.Diag(Conv->getLocation(), diag::note_array_size_conversion)
                    << ConvTy->isEnumeralType() << ConvTy;
         }
-  
-        virtual SemaDiagnosticBuilder diagnoseAmbiguous(
-            Sema &S, SourceLocation Loc, QualType T) {
+
+        SemaDiagnosticBuilder diagnoseAmbiguous(
+            Sema &S, SourceLocation Loc, QualType T) override {
           return S.Diag(Loc, diag::err_array_size_ambiguous_conversion) << T;
         }
-  
-        virtual SemaDiagnosticBuilder noteAmbiguous(
-            Sema &S, CXXConversionDecl *Conv, QualType ConvTy) {
+
+        SemaDiagnosticBuilder noteAmbiguous(
+            Sema &S, CXXConversionDecl *Conv, QualType ConvTy) override {
           return S.Diag(Conv->getLocation(), diag::note_array_size_conversion)
                    << ConvTy->isEnumeralType() << ConvTy;
         }
 
         virtual SemaDiagnosticBuilder diagnoseConversion(
-            Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) {
+            Sema &S, SourceLocation Loc, QualType T, QualType ConvTy) override {
           return S.Diag(Loc,
                         S.getLangOpts().CPlusPlus11
                           ? diag::warn_cxx98_compat_array_size_conversion
@@ -1797,7 +1798,7 @@ bool Sema::FindAllocationFunctions(SourceLocation StartLoc, SourceRange Range,
       else
         Matches.erase(Matches.begin() + 1);
       assert(Matches[0].second->getNumParams() == 2 &&
-             "found an unexpected uusal deallocation function");
+             "found an unexpected usual deallocation function");
     }
   }
 
@@ -2076,18 +2077,16 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
     }
   }
 
+  FunctionProtoType::ExtProtoInfo EPI;
+
   QualType BadAllocType;
   bool HasBadAllocExceptionSpec
     = (Name.getCXXOverloadedOperator() == OO_New ||
        Name.getCXXOverloadedOperator() == OO_Array_New);
-  if (HasBadAllocExceptionSpec && !getLangOpts().CPlusPlus11) {
-    assert(StdBadAlloc && "Must have std::bad_alloc declared");
-    BadAllocType = Context.getTypeDeclType(getStdBadAlloc());
-  }
-
-  FunctionProtoType::ExtProtoInfo EPI;
   if (HasBadAllocExceptionSpec) {
     if (!getLangOpts().CPlusPlus11) {
+      BadAllocType = Context.getTypeDeclType(getStdBadAlloc());
+      assert(StdBadAlloc && "Must have std::bad_alloc declared");
       EPI.ExceptionSpecType = EST_Dynamic;
       EPI.NumExceptions = 1;
       EPI.Exceptions = &BadAllocType;
@@ -2111,11 +2110,13 @@ void Sema::DeclareGlobalAllocationFunction(DeclarationName Name,
     Alloc->addAttr(MallocAttr::CreateImplicit(Context));
 
   ParmVarDecl *ParamDecls[2];
-  for (unsigned I = 0; I != NumParams; ++I)
+  for (unsigned I = 0; I != NumParams; ++I) {
     ParamDecls[I] = ParmVarDecl::Create(Context, Alloc, SourceLocation(),
                                         SourceLocation(), 0,
                                         Params[I], /*TInfo=*/0,
                                         SC_None, 0);
+    ParamDecls[I]->setImplicit();
+  }
   Alloc->setParams(ArrayRef<ParmVarDecl*>(ParamDecls, NumParams));
 
   // FIXME: Also add this declaration to the IdentifierResolver, but
@@ -2158,7 +2159,7 @@ FunctionDecl *Sema::FindUsualDeallocationFunction(SourceLocation StartLoc,
     else
       Matches.erase(Matches.begin() + 1);
     assert(Matches[0]->getNumParams() == NumArgs &&
-           "found an unexpected uusal deallocation function");
+           "found an unexpected usual deallocation function");
   }
 
   assert(Matches.size() == 1 &&
@@ -2274,7 +2275,7 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
     public:
       DeleteConverter() : ContextualImplicitConverter(false, true) {}
 
-      bool match(QualType ConvType) {
+      bool match(QualType ConvType) override {
         // FIXME: If we have an operator T* and an operator void*, we must pick
         // the operator T*.
         if (const PointerType *ConvPtrType = ConvType->getAs<PointerType>())
@@ -2284,39 +2285,41 @@ Sema::ActOnCXXDelete(SourceLocation StartLoc, bool UseGlobal,
       }
 
       SemaDiagnosticBuilder diagnoseNoMatch(Sema &S, SourceLocation Loc,
-                                            QualType T) {
+                                            QualType T) override {
         return S.Diag(Loc, diag::err_delete_operand) << T;
       }
 
       SemaDiagnosticBuilder diagnoseIncomplete(Sema &S, SourceLocation Loc,
-                                               QualType T) {
+                                               QualType T) override {
         return S.Diag(Loc, diag::err_delete_incomplete_class_type) << T;
       }
 
       SemaDiagnosticBuilder diagnoseExplicitConv(Sema &S, SourceLocation Loc,
-                                                 QualType T, QualType ConvTy) {
+                                                 QualType T,
+                                                 QualType ConvTy) override {
         return S.Diag(Loc, diag::err_delete_explicit_conversion) << T << ConvTy;
       }
 
       SemaDiagnosticBuilder noteExplicitConv(Sema &S, CXXConversionDecl *Conv,
-                                             QualType ConvTy) {
+                                             QualType ConvTy) override {
         return S.Diag(Conv->getLocation(), diag::note_delete_conversion)
           << ConvTy;
       }
 
       SemaDiagnosticBuilder diagnoseAmbiguous(Sema &S, SourceLocation Loc,
-                                              QualType T) {
+                                              QualType T) override {
         return S.Diag(Loc, diag::err_ambiguous_delete_operand) << T;
       }
 
       SemaDiagnosticBuilder noteAmbiguous(Sema &S, CXXConversionDecl *Conv,
-                                          QualType ConvTy) {
+                                          QualType ConvTy) override {
         return S.Diag(Conv->getLocation(), diag::note_delete_conversion)
           << ConvTy;
       }
 
       SemaDiagnosticBuilder diagnoseConversion(Sema &S, SourceLocation Loc,
-                                               QualType T, QualType ConvTy) {
+                                               QualType T,
+                                               QualType ConvTy) override {
         llvm_unreachable("conversion functions are permitted");
       }
     } Converter;
@@ -5082,8 +5085,11 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
   }
 
   CXXBindTemporaryExpr *TopBind = dyn_cast<CXXBindTemporaryExpr>(E);
-  if (TopBind)
-    E = TopBind->getSubExpr();
+  CallExpr *TopCall = TopBind ? dyn_cast<CallExpr>(TopBind->getSubExpr()) : 0;
+  if (TopCall)
+    E = TopCall;
+  else
+    TopBind = 0;
 
   // Disable the special decltype handling now.
   ExprEvalContexts.back().IsDecltype = false;
@@ -5094,7 +5100,6 @@ ExprResult Sema::ActOnDecltypeExpression(Expr *E) {
     return Owned(E);
 
   // Perform the semantic checks we delayed until this point.
-  CallExpr *TopCall = dyn_cast<CallExpr>(E);
   for (unsigned I = 0, N = ExprEvalContexts.back().DelayedDecltypeCalls.size();
        I != N; ++I) {
     CallExpr *Call = ExprEvalContexts.back().DelayedDecltypeCalls[I];
@@ -5813,17 +5818,16 @@ static inline bool VariableCanNeverBeAConstantExpression(VarDecl *Var,
   assert(DefVD);
   if (DefVD->isWeak()) return false;
   EvaluatedStmt *Eval = DefVD->ensureEvaluatedStmt();
-  
+
   Expr *Init = cast<Expr>(Eval->Value);
 
   if (Var->getType()->isDependentType() || Init->isValueDependent()) {
-    if (!Init->isValueDependent())
-      return !DefVD->checkInitIsICE();
-    // FIXME: We might still be able to do some analysis of Init here
-    // to conclude that even in a dependent setting, Init can never
-    // be a constexpr - but for now admit agnosticity.
+    // FIXME: Teach the constant evaluator to deal with the non-dependent parts
+    // of value-dependent expressions, and use it here to determine whether the
+    // initializer is a potential constant expression.
     return false;
-  } 
+  }
+
   return !IsVariableAConstantExpression(Var, Context); 
 }
 

@@ -37,6 +37,7 @@
 #include "llvm/Transforms/Instrumentation.h"
 #include "llvm/Transforms/ObjCARC.h"
 #include "llvm/Transforms/Scalar.h"
+#include <memory>
 using namespace clang;
 using namespace llvm;
 
@@ -59,7 +60,7 @@ private:
   PassManager *getCodeGenPasses() const {
     if (!CodeGenPasses) {
       CodeGenPasses = new PassManager();
-      CodeGenPasses->add(new DataLayout(TheModule));
+      CodeGenPasses->add(new DataLayoutPass(TheModule));
       if (TM)
         TM->addAnalysisPasses(*CodeGenPasses);
     }
@@ -69,7 +70,7 @@ private:
   PassManager *getPerModulePasses() const {
     if (!PerModulePasses) {
       PerModulePasses = new PassManager();
-      PerModulePasses->add(new DataLayout(TheModule));
+      PerModulePasses->add(new DataLayoutPass(TheModule));
       if (TM)
         TM->addAnalysisPasses(*PerModulePasses);
     }
@@ -79,7 +80,7 @@ private:
   FunctionPassManager *getPerFunctionPasses() const {
     if (!PerFunctionPasses) {
       PerFunctionPasses = new FunctionPassManager(TheModule);
-      PerFunctionPasses->add(new DataLayout(TheModule));
+      PerFunctionPasses->add(new DataLayoutPass(TheModule));
       if (TM)
         TM->addAnalysisPasses(*PerFunctionPasses);
     }
@@ -118,10 +119,10 @@ public:
     delete PerModulePasses;
     delete PerFunctionPasses;
     if (CodeGenOpts.DisableFree)
-      BuryPointer(TM.take());
+      BuryPointer(TM.release());
   }
 
-  llvm::OwningPtr<TargetMachine> TM;
+  std::unique_ptr<TargetMachine> TM;
 
   void EmitAssembly(BackendAction Action, raw_ostream *OS);
 };
@@ -163,6 +164,11 @@ static void addSampleProfileLoaderPass(const PassManagerBuilder &Builder,
       static_cast<const PassManagerBuilderWrapper &>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   PM.add(createSampleProfileLoaderPass(CGOpts.SampleProfileFile));
+}
+
+static void addAddDiscriminatorsPass(const PassManagerBuilder &Builder,
+                                     PassManagerBase &PM) {
+  PM.add(createAddDiscriminatorsPass());
 }
 
 static void addBoundsCheckingPass(const PassManagerBuilder &Builder,
@@ -245,6 +251,9 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.DisableUnrollLoops = !CodeGenOpts.UnrollLoops;
   PMBuilder.RerollLoops = CodeGenOpts.RerollLoops;
 
+  PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
+                         addAddDiscriminatorsPass);
+
   if (!CodeGenOpts.SampleProfileFile.empty())
     PMBuilder.addExtension(PassManagerBuilder::EP_EarlyAsPossible,
                            addSampleProfileLoaderPass);
@@ -299,19 +308,12 @@ void EmitAssemblyHelper::CreatePasses() {
   PMBuilder.LibraryInfo = new TargetLibraryInfo(TargetTriple);
   if (!CodeGenOpts.SimplifyLibCalls)
     PMBuilder.LibraryInfo->disableAllFunctions();
-  
+
   switch (Inlining) {
   case CodeGenOptions::NoInlining: break;
   case CodeGenOptions::NormalInlining: {
-    // FIXME: Derive these constants in a principled fashion.
-    unsigned Threshold = 225;
-    if (CodeGenOpts.OptimizeSize == 1)      // -Os
-      Threshold = 75;
-    else if (CodeGenOpts.OptimizeSize == 2) // -Oz
-      Threshold = 25;
-    else if (OptLevel > 2)
-      Threshold = 275;
-    PMBuilder.Inliner = createFunctionInliningPass(Threshold);
+    PMBuilder.Inliner =
+        createFunctionInliningPass(OptLevel, CodeGenOpts.OptimizeSize);
     break;
   }
   case CodeGenOptions::OnlyAlwaysInlining:
@@ -437,6 +439,12 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   }
 
   llvm::TargetOptions Options;
+
+  if (CodeGenOpts.DisableIntegratedAS)
+    Options.DisableIntegratedAS = true;
+
+  if (CodeGenOpts.CompressDebugSections)
+    Options.CompressDebugSections = true;
 
   // Set frame pointer elimination mode.
   if (!CodeGenOpts.DisableFPElim) {

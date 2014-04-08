@@ -65,16 +65,56 @@ namespace {
   public:
     UnreachableCodeHandler(Sema &s) : S(s) {}
 
-    void HandleUnreachable(SourceLocation L, SourceRange R1, SourceRange R2) {
-      S.Diag(L, diag::warn_unreachable) << R1 << R2;
+    void HandleUnreachable(reachable_code::UnreachableKind UK,
+                           SourceLocation L,
+                           SourceRange SilenceableCondVal,
+                           SourceRange R1,
+                           SourceRange R2) override {
+      unsigned diag = diag::warn_unreachable;
+      switch (UK) {
+        case reachable_code::UK_Break:
+          diag = diag::warn_unreachable_break;
+          break;
+        case reachable_code::UK_Return:
+          diag = diag::warn_unreachable_return;
+          break;
+        case reachable_code::UK_Loop_Increment:
+          diag = diag::warn_unreachable_loop_increment;
+          break;
+        case reachable_code::UK_Other:
+          break;
+      }
+
+      S.Diag(L, diag) << R1 << R2;
+      
+      SourceLocation Open = SilenceableCondVal.getBegin();
+      if (Open.isValid()) {
+        SourceLocation Close = SilenceableCondVal.getEnd();        
+        Close = S.PP.getLocForEndOfToken(Close);
+        if (Close.isValid()) {
+          S.Diag(Open, diag::note_unreachable_silence)
+            << FixItHint::CreateInsertion(Open, "/* DISABLES CODE */ (")
+            << FixItHint::CreateInsertion(Close, ")");
+        }
+      }
     }
   };
 }
 
 /// CheckUnreachable - Check for unreachable code.
 static void CheckUnreachable(Sema &S, AnalysisDeclContext &AC) {
+  // As a heuristic prune all diagnostics not in the main file.  Currently
+  // the majority of warnings in headers are false positives.  These
+  // are largely caused by configuration state, e.g. preprocessor
+  // defined code, etc.
+  //
+  // Note that this is also a performance optimization.  Analyzing
+  // headers many times can be expensive.
+  if (!S.getSourceManager().isInMainFile(AC.getDecl()->getLocStart()))
+    return;
+
   UnreachableCodeHandler UC(S);
-  reachable_code::FindUnreachableCode(AC, UC);
+  reachable_code::FindUnreachableCode(AC, S.getPreprocessor(), UC);
 }
 
 //===----------------------------------------------------------------------===//
@@ -373,8 +413,7 @@ struct CheckFallThroughDiagnostics {
       diag::err_noreturn_block_has_return_expr;
     D.diag_AlwaysFallThrough_ReturnsNonVoid =
       diag::err_falloff_nonvoid_block;
-    D.diag_NeverFallThroughOrReturn =
-      diag::warn_suggest_noreturn_block;
+    D.diag_NeverFallThroughOrReturn = 0;
     D.funMode = Block;
     return D;
   }
@@ -409,10 +448,7 @@ struct CheckFallThroughDiagnostics {
     }
 
     // For blocks / lambdas.
-    return ReturnsVoid && !HasNoReturn
-            && ((funMode == Lambda) ||
-                D.getDiagnosticLevel(diag::warn_suggest_noreturn_block, FuncLoc)
-                  == DiagnosticsEngine::Ignored);
+    return ReturnsVoid && !HasNoReturn;
   }
 };
 
@@ -877,6 +913,7 @@ namespace {
       while (!BlockQueue.empty()) {
         const CFGBlock *P = BlockQueue.front();
         BlockQueue.pop_front();
+        if (!P) continue;
 
         const Stmt *Term = P->getTerminator();
         if (Term && isa<SwitchStmt>(Term))
@@ -1078,24 +1115,6 @@ static void DiagnoseSwitchLabelsFallthrough(Sema &S, AnalysisDeclContext &AC,
 
 }
 
-namespace {
-typedef std::pair<const Stmt *,
-                  sema::FunctionScopeInfo::WeakObjectUseMap::const_iterator>
-        StmtUsesPair;
-
-class StmtUseSorter {
-  const SourceManager &SM;
-
-public:
-  explicit StmtUseSorter(const SourceManager &SM) : SM(SM) { }
-
-  bool operator()(const StmtUsesPair &LHS, const StmtUsesPair &RHS) {
-    return SM.isBeforeInTranslationUnit(LHS.first->getLocStart(),
-                                        RHS.first->getLocStart());
-  }
-};
-}
-
 static bool isInLoop(const ASTContext &Ctx, const ParentMap &PM,
                      const Stmt *S) {
   assert(S);
@@ -1130,6 +1149,8 @@ static void diagnoseRepeatedUseOfWeak(Sema &S,
   typedef sema::FunctionScopeInfo::WeakObjectProfileTy WeakObjectProfileTy;
   typedef sema::FunctionScopeInfo::WeakObjectUseMap WeakObjectUseMap;
   typedef sema::FunctionScopeInfo::WeakUseVector WeakUseVector;
+  typedef std::pair<const Stmt *, WeakObjectUseMap::const_iterator>
+  StmtUsesPair;
 
   ASTContext &Ctx = S.getASTContext();
 
@@ -1188,8 +1209,12 @@ static void diagnoseRepeatedUseOfWeak(Sema &S,
     return;
 
   // Sort by first use so that we emit the warnings in a deterministic order.
+  SourceManager &SM = S.getSourceManager();
   std::sort(UsesByStmt.begin(), UsesByStmt.end(),
-            StmtUseSorter(S.getSourceManager()));
+            [&SM](const StmtUsesPair &LHS, const StmtUsesPair &RHS) {
+    return SM.isBeforeInTranslationUnit(LHS.first->getLocStart(),
+                                        RHS.first->getLocStart());
+  });
 
   // Classify the current code body for better warning text.
   // This enum should stay in sync with the cases in
@@ -1270,19 +1295,7 @@ static void diagnoseRepeatedUseOfWeak(Sema &S,
   }
 }
 
-
 namespace {
-struct SLocSort {
-  bool operator()(const UninitUse &a, const UninitUse &b) {
-    // Prefer a more confident report over a less confident one.
-    if (a.getKind() != b.getKind())
-      return a.getKind() > b.getKind();
-    SourceLocation aLoc = a.getUser()->getLocStart();
-    SourceLocation bLoc = b.getUser()->getLocStart();
-    return aLoc.getRawEncoding() < bLoc.getRawEncoding();
-  }
-};
-
 class UninitValsDiagReporter : public UninitVariablesHandler {
   Sema &S;
   typedef SmallVector<UninitUse, 2> UsesVec;
@@ -1309,12 +1322,13 @@ public:
     
     return V;
   }
-  
-  void handleUseOfUninitVariable(const VarDecl *vd, const UninitUse &use) {
+
+  void handleUseOfUninitVariable(const VarDecl *vd,
+                                 const UninitUse &use) override {
     getUses(vd).getPointer()->push_back(use);
   }
   
-  void handleSelfInit(const VarDecl *vd) {
+  void handleSelfInit(const VarDecl *vd) override {
     getUses(vd).setInt(true);
   }
   
@@ -1341,8 +1355,14 @@ public:
         // Sort the uses by their SourceLocations.  While not strictly
         // guaranteed to produce them in line/column order, this will provide
         // a stable ordering.
-        std::sort(vec->begin(), vec->end(), SLocSort());
-        
+        std::sort(vec->begin(), vec->end(),
+                  [](const UninitUse &a, const UninitUse &b) {
+          // Prefer a more confident report over a less confident one.
+          if (a.getKind() != b.getKind())
+            return a.getKind() > b.getKind();
+          return a.getUser()->getLocStart() < b.getUser()->getLocStart();
+        });
+
         for (UsesVec::iterator vi = vec->begin(), ve = vec->end(); vi != ve;
              ++vi) {
           // If we have self-init, downgrade all uses to 'may be uninitialized'.
@@ -1405,12 +1425,13 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
   SourceLocation FunLocation, FunEndLocation;
 
   // Helper functions
-  void warnLockMismatch(unsigned DiagID, Name LockName, SourceLocation Loc) {
+  void warnLockMismatch(unsigned DiagID, StringRef Kind, Name LockName,
+                        SourceLocation Loc) {
     // Gracefully handle rare cases when the analysis can't get a more
     // precise source location.
     if (!Loc.isValid())
       Loc = FunLocation;
-    PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID) << LockName);
+    PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID) << Kind << LockName);
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 
@@ -1433,22 +1454,33 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
     }
   }
 
-  void handleInvalidLockExp(SourceLocation Loc) {
-    PartialDiagnosticAt Warning(Loc,
-                                S.PDiag(diag::warn_cannot_resolve_lock) << Loc);
+  void handleInvalidLockExp(StringRef Kind, SourceLocation Loc) override {
+    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_cannot_resolve_lock)
+                                         << Loc);
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
-  void handleUnmatchedUnlock(Name LockName, SourceLocation Loc) {
-    warnLockMismatch(diag::warn_unlock_but_no_lock, LockName, Loc);
+  void handleUnmatchedUnlock(StringRef Kind, Name LockName,
+                             SourceLocation Loc) override {
+    warnLockMismatch(diag::warn_unlock_but_no_lock, Kind, LockName, Loc);
+  }
+  void handleIncorrectUnlockKind(StringRef Kind, Name LockName,
+                                 LockKind Expected, LockKind Received,
+                                 SourceLocation Loc) override {
+    if (Loc.isInvalid())
+      Loc = FunLocation;
+    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_unlock_kind_mismatch)
+                                         << Kind << LockName << Received
+                                         << Expected);
+    Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
+  }
+  void handleDoubleLock(StringRef Kind, Name LockName, SourceLocation Loc) override {
+    warnLockMismatch(diag::warn_double_lock, Kind, LockName, Loc);
   }
 
-  void handleDoubleLock(Name LockName, SourceLocation Loc) {
-    warnLockMismatch(diag::warn_double_lock, LockName, Loc);
-  }
-
-  void handleMutexHeldEndOfScope(Name LockName, SourceLocation LocLocked,
+  void handleMutexHeldEndOfScope(StringRef Kind, Name LockName,
+                                 SourceLocation LocLocked,
                                  SourceLocation LocEndOfScope,
-                                 LockErrorKind LEK){
+                                 LockErrorKind LEK) override {
     unsigned DiagID = 0;
     switch (LEK) {
       case LEK_LockedSomePredecessors:
@@ -1467,29 +1499,33 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
     if (LocEndOfScope.isInvalid())
       LocEndOfScope = FunEndLocation;
 
-    PartialDiagnosticAt Warning(LocEndOfScope, S.PDiag(DiagID) << LockName);
+    PartialDiagnosticAt Warning(LocEndOfScope, S.PDiag(DiagID) << Kind
+                                                               << LockName);
     if (LocLocked.isValid()) {
-      PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here));
+      PartialDiagnosticAt Note(LocLocked, S.PDiag(diag::note_locked_here)
+                                              << Kind);
       Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
       return;
     }
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 
-
-  void handleExclusiveAndShared(Name LockName, SourceLocation Loc1,
-                                SourceLocation Loc2) {
-    PartialDiagnosticAt Warning(
-      Loc1, S.PDiag(diag::warn_lock_exclusive_and_shared) << LockName);
-    PartialDiagnosticAt Note(
-      Loc2, S.PDiag(diag::note_lock_exclusive_and_shared) << LockName);
+  void handleExclusiveAndShared(StringRef Kind, Name LockName,
+                                SourceLocation Loc1,
+                                SourceLocation Loc2) override {
+    PartialDiagnosticAt Warning(Loc1,
+                                S.PDiag(diag::warn_lock_exclusive_and_shared)
+                                    << Kind << LockName);
+    PartialDiagnosticAt Note(Loc2, S.PDiag(diag::note_lock_exclusive_and_shared)
+                                       << Kind << LockName);
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
   }
 
-  void handleNoMutexHeld(const NamedDecl *D, ProtectedOperationKind POK,
-                         AccessKind AK, SourceLocation Loc) {
-    assert((POK == POK_VarAccess || POK == POK_VarDereference)
-             && "Only works for variables");
+  void handleNoMutexHeld(StringRef Kind, const NamedDecl *D,
+                         ProtectedOperationKind POK, AccessKind AK,
+                         SourceLocation Loc) override {
+    assert((POK == POK_VarAccess || POK == POK_VarDereference) &&
+           "Only works for variables");
     unsigned DiagID = POK == POK_VarAccess?
                         diag::warn_variable_requires_any_lock:
                         diag::warn_var_deref_requires_any_lock;
@@ -1498,9 +1534,10 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 
-  void handleMutexNotHeld(const NamedDecl *D, ProtectedOperationKind POK,
-                          Name LockName, LockKind LK, SourceLocation Loc,
-                          Name *PossibleMatch) {
+  void handleMutexNotHeld(StringRef Kind, const NamedDecl *D,
+                          ProtectedOperationKind POK, Name LockName,
+                          LockKind LK, SourceLocation Loc,
+                          Name *PossibleMatch) override {
     unsigned DiagID = 0;
     if (PossibleMatch) {
       switch (POK) {
@@ -1514,10 +1551,11 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
           DiagID = diag::warn_fun_requires_lock_precise;
           break;
       }
-      PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID)
-        << D->getNameAsString() << LockName << LK);
+      PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID) << Kind
+                                                       << D->getNameAsString()
+                                                       << LockName << LK);
       PartialDiagnosticAt Note(Loc, S.PDiag(diag::note_found_mutex_near_match)
-                               << *PossibleMatch);
+                                        << *PossibleMatch);
       Warnings.push_back(DelayedDiag(Warning, OptionalNotes(1, Note)));
     } else {
       switch (POK) {
@@ -1531,15 +1569,17 @@ class ThreadSafetyReporter : public clang::thread_safety::ThreadSafetyHandler {
           DiagID = diag::warn_fun_requires_lock;
           break;
       }
-      PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID)
-        << D->getNameAsString() << LockName << LK);
+      PartialDiagnosticAt Warning(Loc, S.PDiag(DiagID) << Kind
+                                                       << D->getNameAsString()
+                                                       << LockName << LK);
       Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
     }
   }
 
-  void handleFunExcludesLock(Name FunName, Name LockName, SourceLocation Loc) {
-    PartialDiagnosticAt Warning(Loc,
-      S.PDiag(diag::warn_fun_excludes_mutex) << FunName << LockName);
+  void handleFunExcludesLock(StringRef Kind, Name FunName, Name LockName,
+                             SourceLocation Loc) override {
+    PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_fun_excludes_mutex)
+                                         << Kind << FunName << LockName);
     Warnings.push_back(DelayedDiag(Warning, OptionalNotes()));
   }
 };
@@ -1562,8 +1602,8 @@ class ConsumedWarningsHandler : public ConsumedWarningsHandlerBase {
 public:
   
   ConsumedWarningsHandler(Sema &S) : S(S) {}
-  
-  void emitDiagnostics() {
+
+  void emitDiagnostics() override {
     Warnings.sort(SortDiagBySourceLocation(S.getSourceManager()));
     
     for (DiagList::iterator I = Warnings.begin(), E = Warnings.end();
@@ -1577,8 +1617,9 @@ public:
       }
     }
   }
-  
-  void warnLoopStateMismatch(SourceLocation Loc, StringRef VariableName) {
+
+  void warnLoopStateMismatch(SourceLocation Loc,
+                             StringRef VariableName) override {
     PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_loop_state_mismatch) <<
       VariableName);
     
@@ -1588,7 +1629,7 @@ public:
   void warnParamReturnTypestateMismatch(SourceLocation Loc,
                                         StringRef VariableName,
                                         StringRef ExpectedState,
-                                        StringRef ObservedState) {
+                                        StringRef ObservedState) override {
     
     PartialDiagnosticAt Warning(Loc, S.PDiag(
       diag::warn_param_return_typestate_mismatch) << VariableName <<
@@ -1598,7 +1639,7 @@ public:
   }
   
   void warnParamTypestateMismatch(SourceLocation Loc, StringRef ExpectedState,
-                                  StringRef ObservedState) {
+                                  StringRef ObservedState) override {
     
     PartialDiagnosticAt Warning(Loc, S.PDiag(
       diag::warn_param_typestate_mismatch) << ExpectedState << ObservedState);
@@ -1607,7 +1648,7 @@ public:
   }
   
   void warnReturnTypestateForUnconsumableType(SourceLocation Loc,
-                                              StringRef TypeName) {
+                                              StringRef TypeName) override {
     PartialDiagnosticAt Warning(Loc, S.PDiag(
       diag::warn_return_typestate_for_unconsumable_type) << TypeName);
     
@@ -1615,7 +1656,7 @@ public:
   }
   
   void warnReturnTypestateMismatch(SourceLocation Loc, StringRef ExpectedState,
-                                   StringRef ObservedState) {
+                                   StringRef ObservedState) override {
                                     
     PartialDiagnosticAt Warning(Loc, S.PDiag(
       diag::warn_return_typestate_mismatch) << ExpectedState << ObservedState);
@@ -1624,7 +1665,7 @@ public:
   }
   
   void warnUseOfTempInInvalidState(StringRef MethodName, StringRef State,
-                                   SourceLocation Loc) {
+                                   SourceLocation Loc) override {
                                                     
     PartialDiagnosticAt Warning(Loc, S.PDiag(
       diag::warn_use_of_temp_in_invalid_state) << MethodName << State);
@@ -1633,7 +1674,7 @@ public:
   }
   
   void warnUseInInvalidState(StringRef MethodName, StringRef VariableName,
-                                  StringRef State, SourceLocation Loc) {
+                             StringRef State, SourceLocation Loc) override {
   
     PartialDiagnosticAt Warning(Loc, S.PDiag(diag::warn_use_in_invalid_state) <<
                                 MethodName << VariableName << State);
@@ -1655,6 +1696,11 @@ clang::sema::AnalysisBasedWarnings::Policy::Policy() {
   enableConsumedAnalysis = 0;
 }
 
+static unsigned isEnabled(DiagnosticsEngine &D, unsigned diag) {
+  return (unsigned) D.getDiagnosticLevel(diag, SourceLocation()) !=
+                    DiagnosticsEngine::Ignored;
+}
+
 clang::sema::AnalysisBasedWarnings::AnalysisBasedWarnings(Sema &s)
   : S(s),
     NumFunctionsAnalyzed(0),
@@ -1666,16 +1712,21 @@ clang::sema::AnalysisBasedWarnings::AnalysisBasedWarnings(Sema &s)
     MaxUninitAnalysisVariablesPerFunction(0),
     NumUninitAnalysisBlockVisits(0),
     MaxUninitAnalysisBlockVisitsPerFunction(0) {
+
+  using namespace diag;
   DiagnosticsEngine &D = S.getDiagnostics();
-  DefaultPolicy.enableCheckUnreachable = (unsigned)
-    (D.getDiagnosticLevel(diag::warn_unreachable, SourceLocation()) !=
-        DiagnosticsEngine::Ignored);
-  DefaultPolicy.enableThreadSafetyAnalysis = (unsigned)
-    (D.getDiagnosticLevel(diag::warn_double_lock, SourceLocation()) !=
-     DiagnosticsEngine::Ignored);
-  DefaultPolicy.enableConsumedAnalysis = (unsigned)
-    (D.getDiagnosticLevel(diag::warn_use_in_invalid_state, SourceLocation()) !=
-     DiagnosticsEngine::Ignored);
+
+  DefaultPolicy.enableCheckUnreachable =
+    isEnabled(D, warn_unreachable) ||
+    isEnabled(D, warn_unreachable_break) ||
+    isEnabled(D, warn_unreachable_return) ||
+    isEnabled(D, warn_unreachable_loop_increment);
+
+  DefaultPolicy.enableThreadSafetyAnalysis =
+    isEnabled(D, warn_double_lock);
+
+  DefaultPolicy.enableConsumedAnalysis =
+    isEnabled(D, warn_use_in_invalid_state);
 }
 
 static void flushDiagnostics(Sema &S, sema::FunctionScopeInfo *fscope) {

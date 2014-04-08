@@ -213,9 +213,6 @@ namespace clang {
       /// types and decls used within the AST file.
       DECLTYPES_BLOCK_ID,
 
-      /// \brief The block containing DECL_UPDATES records.
-      DECL_UPDATES_BLOCK_ID,
-      
       /// \brief The block containing the detailed preprocessing record.
       PREPROCESSOR_DETAIL_BLOCK_ID,
       
@@ -349,15 +346,15 @@ namespace clang {
       /// IDs).
       IDENTIFIER_TABLE = 5,
 
-      /// \brief Record code for the array of external definitions.
+      /// \brief Record code for the array of eagerly deserialized decls.
       ///
-      /// The AST file contains a list of all of the unnamed external
-      /// definitions present within the parsed headers, stored as an
-      /// array of declaration IDs. These external definitions will be
+      /// The AST file contains a list of all of the declarations that should be
+      /// eagerly deserialized present within the parsed headers, stored as an
+      /// array of declaration IDs. These declarations will be
       /// reported to the AST consumer after the AST file has been
       /// read, since their presence can affect the semantics of the
       /// program (e.g., for code generation).
-      EXTERNAL_DEFINITIONS = 6,
+      EAGERLY_DESERIALIZED_DECLS = 6,
 
       /// \brief Record code for the set of non-builtin, special
       /// types.
@@ -1333,6 +1330,7 @@ namespace clang {
 
       // OpenMP drectives
       STMT_OMP_PARALLEL_DIRECTIVE,
+      STMT_OMP_SIMD_DIRECTIVE,
 
       // ARC
       EXPR_OBJC_BRIDGED_CAST,     // ObjCBridgedCastExpr

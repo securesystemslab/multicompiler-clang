@@ -75,7 +75,11 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     Diags(PP.getDiagnostics()), SourceMgr(PP.getSourceManager()),
     CollectStats(false), CodeCompleter(CodeCompleter),
     CurContext(0), OriginalLexicalContext(0),
-    PackContext(0), MSStructPragmaOn(false), VisContext(0),
+    PackContext(0), MSStructPragmaOn(false),
+    MSPointerToMemberRepresentationMethod(
+        LangOpts.getMSPointerToMemberRepresentationMethod()),
+    VtorDispModeStack(1, MSVtorDispAttr::Mode(LangOpts.VtorDispMode)),
+    VisContext(0),
     IsBuildingRecoveryCallExpr(false),
     ExprNeedsCleanups(false), LateTemplateParser(0), OpaqueParser(0),
     IdResolver(pp), StdInitializerList(0), CXXTypeInfoDecl(0), MSVCGuidDecl(0),
@@ -85,7 +89,7 @@ Sema::Sema(Preprocessor &pp, ASTContext &ctxt, ASTConsumer &consumer,
     NSDictionaryDecl(0), DictionaryWithObjectsMethod(0),
     GlobalNewDeleteDeclared(false),
     TUKind(TUKind),
-    NumSFINAEErrors(0), InFunctionDeclarator(0),
+    NumSFINAEErrors(0),
     AccessCheckingSFINAE(false), InNonInstantiationSFINAEContext(false),
     NonInstantiationEntries(0), ArgumentPackSubstitutionIndex(-1),
     CurrentInstantiationScope(0), DisableTypoCorrection(false),
@@ -204,13 +208,9 @@ void Sema::Initialize() {
 }
 
 Sema::~Sema() {
-  for (LateParsedTemplateMapT::iterator I = LateParsedTemplateMap.begin(),
-                                        E = LateParsedTemplateMap.end();
-       I != E; ++I)
-    delete I->second;
+  llvm::DeleteContainerSeconds(LateParsedTemplateMap);
   if (PackContext) FreePackedContext();
   if (VisContext) FreeVisContext();
-  MSStructPragmaOn = false;
   // Kill all the active scopes.
   for (unsigned I = 1, E = FunctionScopes.size(); I != E; ++I)
     delete FunctionScopes[I];
@@ -409,25 +409,6 @@ static bool ShouldRemoveFromUnused(Sema *SemaRef, const DeclaratorDecl *D) {
   return false;
 }
 
-namespace {
-  struct SortUndefinedButUsed {
-    const SourceManager &SM;
-    explicit SortUndefinedButUsed(SourceManager &SM) : SM(SM) {}
-
-    bool operator()(const std::pair<NamedDecl *, SourceLocation> &l,
-                    const std::pair<NamedDecl *, SourceLocation> &r) const {
-      if (l.second.isValid() && !r.second.isValid())
-        return true;
-      if (!l.second.isValid() && r.second.isValid())
-        return false;
-      if (l.second != r.second)
-        return SM.isBeforeInTranslationUnit(l.second, r.second);
-      return SM.isBeforeInTranslationUnit(l.first->getLocation(),
-                                          r.first->getLocation());
-    }
-  };
-}
-
 /// Obtains a sorted list of functions that are undefined but ODR-used.
 void Sema::getUndefinedButUsed(
     SmallVectorImpl<std::pair<NamedDecl *, SourceLocation> > &Undefined) {
@@ -460,8 +441,19 @@ void Sema::getUndefinedButUsed(
 
   // Sort (in order of use site) so that we're not dependent on the iteration
   // order through an llvm::DenseMap.
+  SourceManager &SM = Context.getSourceManager();
   std::sort(Undefined.begin(), Undefined.end(),
-            SortUndefinedButUsed(Context.getSourceManager()));
+            [&SM](const std::pair<NamedDecl *, SourceLocation> &l,
+                  const std::pair<NamedDecl *, SourceLocation> &r) {
+    if (l.second.isValid() && !r.second.isValid())
+      return true;
+    if (!l.second.isValid() && r.second.isValid())
+      return false;
+    if (l.second != r.second)
+      return SM.isBeforeInTranslationUnit(l.second, r.second);
+    return SM.isBeforeInTranslationUnit(l.first->getLocation(),
+                                        r.first->getLocation());
+  });
 }
 
 /// checkUndefinedButUsed - Check for undefined objects with internal linkage
@@ -628,7 +620,15 @@ void Sema::ActOnEndOfTranslationUnit() {
     // so it will find some names that are not required to be found. This is
     // valid, but we could do better by diagnosing if an instantiation uses a
     // name that was not visible at its first point of instantiation.
+    if (ExternalSource) {
+      // Load pending instantiations from the external source.
+      SmallVector<PendingImplicitInstantiation, 4> Pending;
+      ExternalSource->ReadPendingInstantiations(Pending);
+      PendingInstantiations.insert(PendingInstantiations.begin(),
+                                   Pending.begin(), Pending.end());
+    }
     PerformPendingInstantiations();
+
     CheckDelayedMemberExceptionSpecs();
   }
 

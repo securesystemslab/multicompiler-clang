@@ -29,10 +29,10 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/OwningPtr.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Allocator.h"
+#include <memory>
 #include <vector>
 
 namespace llvm {
@@ -102,7 +102,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
 
   /// An optional PTHManager object used for getting tokens from
   /// a token cache rather than lexing the original source file.
-  OwningPtr<PTHManager> PTH;
+  std::unique_ptr<PTHManager> PTH;
 
   /// A BumpPtrAllocator object used to quickly allocate and release
   /// objects internal to the Preprocessor.
@@ -116,6 +116,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   IdentifierInfo *Ident__TIMESTAMP__;              // __TIMESTAMP__
   IdentifierInfo *Ident__COUNTER__;                // __COUNTER__
   IdentifierInfo *Ident_Pragma, *Ident__pragma;    // _Pragma, __pragma
+  IdentifierInfo *Ident__identifier;               // __identifier
   IdentifierInfo *Ident__VA_ARGS__;                // __VA_ARGS__
   IdentifierInfo *Ident__has_feature;              // __has_feature
   IdentifierInfo *Ident__has_extension;            // __has_extension
@@ -200,6 +201,9 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// avoid tearing the Lexer and etc. down).
   bool IncrementalProcessing;
 
+  /// The kind of translation unit we are processing.
+  TranslationUnitKind TUKind;
+
   /// \brief The code-completion handler.
   CodeCompletionHandler *CodeComplete;
 
@@ -251,13 +255,13 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// not expanding a macro and we are lexing directly from source code.
   ///
   /// Only one of CurLexer, CurPTHLexer, or CurTokenLexer will be non-null.
-  OwningPtr<Lexer> CurLexer;
+  std::unique_ptr<Lexer> CurLexer;
 
   /// \brief The current top of stack that we're lexing from if
   /// not expanding from a macro and we are lexing from a PTH cache.
   ///
   /// Only one of CurLexer, CurPTHLexer, or CurTokenLexer will be non-null.
-  OwningPtr<PTHLexer> CurPTHLexer;
+  std::unique_ptr<PTHLexer> CurPTHLexer;
 
   /// \brief The current top of the stack what we're lexing from
   /// if not expanding a macro.
@@ -275,7 +279,7 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
   /// \brief The current macro we are expanding, if we are expanding a macro.
   ///
   /// One of CurLexer and CurTokenLexer must be null.
-  OwningPtr<TokenLexer> CurTokenLexer;
+  std::unique_ptr<TokenLexer> CurTokenLexer;
 
   /// \brief The kind of lexer we're currently working with.
   enum CurLexerKind {
@@ -286,26 +290,44 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
     CLK_LexAfterModuleImport
   } CurLexerKind;
 
-  /// \brief True if the current lexer is for a submodule.
-  bool CurIsSubmodule;
+  /// \brief If the current lexer is for a submodule that is being built, this
+  /// is that submodule.
+  Module *CurSubmodule;
 
   /// \brief Keeps track of the stack of files currently
   /// \#included, and macros currently being expanded from, not counting
   /// CurLexer/CurTokenLexer.
   struct IncludeStackInfo {
-    enum CurLexerKind     CurLexerKind;
-    bool                  IsSubmodule;
-    Lexer                 *TheLexer;
-    PTHLexer              *ThePTHLexer;
-    PreprocessorLexer     *ThePPLexer;
-    TokenLexer            *TheTokenLexer;
-    const DirectoryLookup *TheDirLookup;
+    enum CurLexerKind           CurLexerKind;
+    Module                     *TheSubmodule;
+    std::unique_ptr<Lexer>      TheLexer;
+    std::unique_ptr<PTHLexer>   ThePTHLexer;
+    PreprocessorLexer          *ThePPLexer;
+    std::unique_ptr<TokenLexer> TheTokenLexer;
+    const DirectoryLookup      *TheDirLookup;
 
-    IncludeStackInfo(enum CurLexerKind K, bool SM, Lexer *L, PTHLexer *P,
-                     PreprocessorLexer *PPL, TokenLexer *TL,
-                     const DirectoryLookup *D)
-        : CurLexerKind(K), IsSubmodule(SM), TheLexer(L), ThePTHLexer(P),
-          ThePPLexer(PPL), TheTokenLexer(TL), TheDirLookup(D) {}
+    // The following constructors are completely useless copies of the default
+    // versions, only needed to pacify MSVC.
+    IncludeStackInfo(enum CurLexerKind CurLexerKind, Module *TheSubmodule,
+                     std::unique_ptr<Lexer> &&TheLexer,
+                     std::unique_ptr<PTHLexer> &&ThePTHLexer,
+                     PreprocessorLexer *ThePPLexer,
+                     std::unique_ptr<TokenLexer> &&TheTokenLexer,
+                     const DirectoryLookup *TheDirLookup)
+        : CurLexerKind(std::move(CurLexerKind)),
+          TheSubmodule(std::move(TheSubmodule)), TheLexer(std::move(TheLexer)),
+          ThePTHLexer(std::move(ThePTHLexer)),
+          ThePPLexer(std::move(ThePPLexer)),
+          TheTokenLexer(std::move(TheTokenLexer)),
+          TheDirLookup(std::move(TheDirLookup)) {}
+    IncludeStackInfo(IncludeStackInfo &&RHS)
+        : CurLexerKind(std::move(RHS.CurLexerKind)),
+          TheSubmodule(std::move(RHS.TheSubmodule)),
+          TheLexer(std::move(RHS.TheLexer)),
+          ThePTHLexer(std::move(RHS.ThePTHLexer)),
+          ThePPLexer(std::move(RHS.ThePPLexer)),
+          TheTokenLexer(std::move(RHS.TheTokenLexer)),
+          TheDirLookup(std::move(RHS.TheDirLookup)) {}
   };
   std::vector<IncludeStackInfo> IncludeMacroStack;
 
@@ -438,7 +460,8 @@ public:
                IdentifierInfoLookup *IILookup = 0,
                bool OwnsHeaderSearch = false,
                bool DelayInitialization = false,
-               bool IncrProcessing = false);
+               bool IncrProcessing = false,
+               TranslationUnitKind TUKind = TU_Complete);
 
   ~Preprocessor();
 
@@ -686,14 +709,14 @@ public:
   void EndSourceFile();
 
   /// \brief Add a source file to the top of the include stack and
-  /// start lexing tokens from it instead of the current buffer. 
+  /// start lexing tokens from it instead of the current buffer.
   ///
-  /// Emit an error and don't enter the file on error.
-  void EnterSourceFile(FileID CurFileID, const DirectoryLookup *Dir,
-                       SourceLocation Loc, bool IsSubmodule = false);
+  /// Emits a diagnostic, doesn't enter the file, and returns true on error.
+  bool EnterSourceFile(FileID CurFileID, const DirectoryLookup *Dir,
+                       SourceLocation Loc);
 
   /// \brief Add a Macro to the top of the include stack and start lexing
-  /// tokens from it instead of the current buffer. 
+  /// tokens from it instead of the current buffer.
   ///
   /// \param Args specifies the tokens input to a function-like macro.
   /// \param ILEnd specifies the location of the ')' for a function-like macro
@@ -801,6 +824,11 @@ public:
       LexUnexpandedToken(Result);
     while (Result.getKind() == tok::comment);
   }
+
+  /// \brief Parses a simple integer literal to get its numeric value.  Floating
+  /// point literals and user defined literals are rejected.  Used primarily to
+  /// handle pragmas that accept integer arguments.
+  bool parseSimpleIntegerLiteral(Token &Tok, uint64_t &Value);
 
   /// Disables macro expansion everywhere except for preprocessor directives.
   void SetMacroExpansionOnlyInDirectives() {
@@ -1316,24 +1344,20 @@ public:
 private:
 
   void PushIncludeMacroStack() {
-    IncludeMacroStack.push_back(IncludeStackInfo(CurLexerKind,
-                                                 CurIsSubmodule,
-                                                 CurLexer.take(),
-                                                 CurPTHLexer.take(),
-                                                 CurPPLexer,
-                                                 CurTokenLexer.take(),
-                                                 CurDirLookup));
+    IncludeMacroStack.push_back(IncludeStackInfo(
+        CurLexerKind, CurSubmodule, std::move(CurLexer), std::move(CurPTHLexer),
+        CurPPLexer, std::move(CurTokenLexer), CurDirLookup));
     CurPPLexer = 0;
   }
 
   void PopIncludeMacroStack() {
-    CurLexer.reset(IncludeMacroStack.back().TheLexer);
-    CurPTHLexer.reset(IncludeMacroStack.back().ThePTHLexer);
+    CurLexer = std::move(IncludeMacroStack.back().TheLexer);
+    CurPTHLexer = std::move(IncludeMacroStack.back().ThePTHLexer);
     CurPPLexer = IncludeMacroStack.back().ThePPLexer;
-    CurTokenLexer.reset(IncludeMacroStack.back().TheTokenLexer);
+    CurTokenLexer = std::move(IncludeMacroStack.back().TheTokenLexer);
     CurDirLookup  = IncludeMacroStack.back().TheDirLookup;
+    CurSubmodule = IncludeMacroStack.back().TheSubmodule;
     CurLexerKind = IncludeMacroStack.back().CurLexerKind;
-    CurIsSubmodule = IncludeMacroStack.back().IsSubmodule;
     IncludeMacroStack.pop_back();
   }
 
@@ -1435,13 +1459,11 @@ private:
 
   /// \brief Add a lexer to the top of the include stack and
   /// start lexing tokens from it instead of the current buffer.
-  void EnterSourceFileWithLexer(Lexer *TheLexer, const DirectoryLookup *Dir,
-                                bool IsSubmodule = false);
+  void EnterSourceFileWithLexer(Lexer *TheLexer, const DirectoryLookup *Dir);
 
   /// \brief Add a lexer to the top of the include stack and
   /// start getting tokens from it using the PTH cache.
-  void EnterSourceFileWithPTH(PTHLexer *PL, const DirectoryLookup *Dir,
-                              bool IsSubmodule = false);
+  void EnterSourceFileWithPTH(PTHLexer *PL, const DirectoryLookup *Dir);
 
   /// \brief Set the FileID for the preprocessor predefines.
   void setPredefinesFileID(FileID FID) {
@@ -1456,7 +1478,7 @@ private:
   }
 
   static bool IsFileLexer(const IncludeStackInfo& I) {
-    return IsFileLexer(I.TheLexer, I.ThePPLexer);
+    return IsFileLexer(I.TheLexer.get(), I.ThePPLexer);
   }
 
   bool IsFileLexer() const {

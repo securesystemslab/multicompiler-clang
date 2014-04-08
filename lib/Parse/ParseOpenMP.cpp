@@ -60,6 +60,7 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirective() {
     Diag(Tok, diag::err_omp_unknown_directive);
     break;
   case OMPD_parallel:
+  case OMPD_simd:
   case OMPD_task:
   case NUM_OPENMP_DIRECTIVES:
     Diag(Tok, diag::err_omp_unexpected_directive)
@@ -114,7 +115,8 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective() {
     }
     SkipUntil(tok::annot_pragma_openmp_end);
     break;
-  case OMPD_parallel: {
+  case OMPD_parallel:
+  case OMPD_simd: {
     ConsumeToken();
 
     Actions.StartOpenMPDSABlock(DKind, DirName, Actions.getCurScope());
@@ -255,7 +257,8 @@ bool Parser::ParseOpenMPSimpleVarList(OpenMPDirectiveKind Kind,
 /// \brief Parsing of OpenMP clauses.
 ///
 ///    clause:
-///       default-clause|private-clause|firstprivate-clause|shared-clause
+///       if-clause | num_threads-clause | safelen-clause | default-clause |
+///       private-clause | firstprivate-clause | shared-clause
 ///
 OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
                                      OpenMPClauseKind CKind, bool FirstClause) {
@@ -269,10 +272,25 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
   }
 
   switch (CKind) {
+  case OMPC_if:
+  case OMPC_num_threads:
+  case OMPC_safelen:
+    // OpenMP [2.5, Restrictions]
+    //  At most one if clause can appear on the directive.
+    //  At most one num_threads clause can appear on the directive.
+    // OpenMP [2.8.1, simd construct, Restrictions]
+    //  Only one safelen clause can appear on a simd directive.
+    if (!FirstClause) {
+      Diag(Tok, diag::err_omp_more_one_clause)
+           << getOpenMPDirectiveName(DKind) << getOpenMPClauseName(CKind);
+    }
+
+    Clause = ParseOpenMPSingleExprClause(CKind);
+    break;
   case OMPC_default:
-    // OpenMP [2.9.3.1, Restrictions]
-    //  Only a single default clause may be specified on a parallel or task
-    //  directive.
+    // OpenMP [2.14.3.1, Restrictions]
+    //  Only a single default clause may be specified on a parallel, task or
+    //  teams directive.
     if (!FirstClause) {
       Diag(Tok, diag::err_omp_more_one_clause)
            << getOpenMPDirectiveName(DKind) << getOpenMPClauseName(CKind);
@@ -283,6 +301,7 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
   case OMPC_private:
   case OMPC_firstprivate:
   case OMPC_shared:
+  case OMPC_copyin:
     Clause = ParseOpenMPVarListClause(CKind);
     break;
   case OMPC_unknown:
@@ -298,6 +317,41 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
     break;
   }
   return ErrorFound ? 0 : Clause;
+}
+
+/// \brief Parsing of OpenMP clauses with single expressions like 'if',
+/// 'collapse', 'safelen', 'num_threads', 'simdlen', 'num_teams' or
+/// 'thread_limit'.
+///
+///    if-clause:
+///      'if' '(' expression ')'
+///
+///    num_threads-clause:
+///      'num_threads' '(' expression ')'
+///
+///    safelen-clause:
+///      'safelen' '(' expression ')'
+///
+OMPClause *Parser::ParseOpenMPSingleExprClause(OpenMPClauseKind Kind) {
+  SourceLocation Loc = ConsumeToken();
+
+  BalancedDelimiterTracker T(*this, tok::l_paren, tok::annot_pragma_openmp_end);
+  if (T.expectAndConsume(diag::err_expected_lparen_after,
+                         getOpenMPClauseName(Kind)))
+    return 0;
+
+  ExprResult LHS(ParseCastExpression(false, false, NotTypeCast));
+  ExprResult Val(ParseRHSOfBinaryExpression(LHS, prec::Conditional));
+
+  // Parse ')'.
+  T.consumeClose();
+
+  if (Val.isInvalid())
+    return 0;
+
+  return Actions.ActOnOpenMPSingleExprClause(Kind, Val.take(), Loc,
+                                             T.getOpenLocation(),
+                                             T.getCloseLocation());
 }
 
 /// \brief Parsing of simple OpenMP clauses like 'default'.
@@ -367,7 +421,7 @@ OMPClause *Parser::ParseOpenMPVarListClause(OpenMPClauseKind Kind) {
     } else if (Tok.isNot(tok::r_paren) &&
                Tok.isNot(tok::annot_pragma_openmp_end)) {
       Diag(Tok, diag::err_omp_expected_punc)
-        << 1 << getOpenMPClauseName(Kind);
+        << getOpenMPClauseName(Kind);
     }
   }
 

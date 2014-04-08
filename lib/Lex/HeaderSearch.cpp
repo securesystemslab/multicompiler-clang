@@ -165,8 +165,8 @@ Module *HeaderSearch::lookupModule(StringRef ModuleName, bool AllowSearch) {
 
     bool IsSystem = SearchDirs[Idx].isSystemHeaderDirectory();
     // Search for a module map file in this directory.
-    if (loadModuleMapFile(SearchDirs[Idx].getDir(), IsSystem)
-          == LMM_NewlyLoaded) {
+    if (loadModuleMapFile(SearchDirs[Idx].getDir(), IsSystem,
+                          /*IsFramework*/false) == LMM_NewlyLoaded) {
       // We just loaded a module map file; check whether the module is
       // available now.
       Module = ModMap.findModule(ModuleName);
@@ -179,7 +179,8 @@ Module *HeaderSearch::lookupModule(StringRef ModuleName, bool AllowSearch) {
     SmallString<128> NestedModuleMapDirName;
     NestedModuleMapDirName = SearchDirs[Idx].getDir()->getName();
     llvm::sys::path::append(NestedModuleMapDirName, ModuleName);
-    if (loadModuleMapFile(NestedModuleMapDirName, IsSystem) == LMM_NewlyLoaded){
+    if (loadModuleMapFile(NestedModuleMapDirName, IsSystem,
+                          /*IsFramework*/false) == LMM_NewlyLoaded){
       // If we just loaded a module map file, look for the module again.
       Module = ModMap.findModule(ModuleName);
       if (Module)
@@ -219,17 +220,46 @@ const char *DirectoryLookup::getName() const {
   return getHeaderMap()->getFileName();
 }
 
+static const FileEntry *
+getFileAndSuggestModule(HeaderSearch &HS, StringRef FileName,
+                        const DirectoryEntry *Dir, bool IsSystemHeaderDir,
+                        ModuleMap::KnownHeader *SuggestedModule) {
+  // If we have a module map that might map this header, load it and
+  // check whether we'll have a suggestion for a module.
+  HS.hasModuleMap(FileName, Dir, IsSystemHeaderDir);
+  if (SuggestedModule) {
+    const FileEntry *File = HS.getFileMgr().getFile(FileName,
+                                                    /*OpenFile=*/false);
+    if (File) {
+      // If there is a module that corresponds to this header, suggest it.
+      *SuggestedModule = HS.findModuleForHeader(File);
+
+      // FIXME: This appears to be a no-op. We loaded the module map for this
+      // directory at the start of this function.
+      if (!SuggestedModule->getModule() &&
+          HS.hasModuleMap(FileName, Dir, IsSystemHeaderDir))
+        *SuggestedModule = HS.findModuleForHeader(File);
+    }
+
+    return File;
+  }
+
+  return HS.getFileMgr().getFile(FileName, /*openFile=*/true);
+}
 
 /// LookupFile - Lookup the specified file in this search path, returning it
 /// if it exists or returning null if not.
 const FileEntry *DirectoryLookup::LookupFile(
-    StringRef Filename,
+    StringRef &Filename,
     HeaderSearch &HS,
     SmallVectorImpl<char> *SearchPath,
     SmallVectorImpl<char> *RelativePath,
     ModuleMap::KnownHeader *SuggestedModule,
-    bool &InUserSpecifiedSystemFramework) const {
+    bool &InUserSpecifiedSystemFramework,
+    bool &HasBeenMapped,
+    SmallVectorImpl<char> &MappedName) const {
   InUserSpecifiedSystemFramework = false;
+  HasBeenMapped = false;
 
   SmallString<1024> TmpDir;
   if (isNormalDir()) {
@@ -245,25 +275,10 @@ const FileEntry *DirectoryLookup::LookupFile(
       RelativePath->clear();
       RelativePath->append(Filename.begin(), Filename.end());
     }
-    
-    // If we have a module map that might map this header, load it and
-    // check whether we'll have a suggestion for a module.
-    HS.hasModuleMap(TmpDir, getDir(), isSystemHeaderDirectory());
-    if (SuggestedModule) {
-      const FileEntry *File = HS.getFileMgr().getFile(TmpDir.str(),
-                                                      /*openFile=*/false);
-      if (!File)
-        return File;
-      
-      // If there is a module that corresponds to this header, suggest it.
-      *SuggestedModule = HS.findModuleForHeader(File);
-      if (!SuggestedModule->getModule() &&
-          HS.hasModuleMap(TmpDir, getDir(), isSystemHeaderDirectory()))
-        *SuggestedModule = HS.findModuleForHeader(File);
-      return File;
-    }
-    
-    return HS.getFileMgr().getFile(TmpDir.str(), /*openFile=*/true);
+
+    return getFileAndSuggestModule(HS, TmpDir.str(), getDir(),
+                                   isSystemHeaderDirectory(),
+                                   SuggestedModule);
   }
 
   if (isFramework())
@@ -271,8 +286,28 @@ const FileEntry *DirectoryLookup::LookupFile(
                              SuggestedModule, InUserSpecifiedSystemFramework);
 
   assert(isHeaderMap() && "Unknown directory lookup");
-  const FileEntry * const Result = getHeaderMap()->LookupFile(
-      Filename, HS.getFileMgr());
+  const HeaderMap *HM = getHeaderMap();
+  SmallString<1024> Path;
+  StringRef Dest = HM->lookupFilename(Filename, Path);
+  if (Dest.empty())
+    return 0;
+
+  const FileEntry *Result;
+
+  // Check if the headermap maps the filename to a framework include
+  // ("Foo.h" -> "Foo/Foo.h"), in which case continue header lookup using the
+  // framework include.
+  if (llvm::sys::path::is_relative(Dest)) {
+    MappedName.clear();
+    MappedName.append(Dest.begin(), Dest.end());
+    Filename = StringRef(MappedName.begin(), MappedName.size());
+    HasBeenMapped = true;
+    Result = HM->LookupFile(Filename, HS.getFileMgr());
+
+  } else {
+    Result = HS.getFileMgr().getFile(Dest);
+  }
+
   if (Result) {
     if (SearchPath != NULL) {
       StringRef SearchPathRef(getName());
@@ -489,6 +524,26 @@ void HeaderSearch::setTarget(const TargetInfo &Target) {
 // Header File Location.
 //===----------------------------------------------------------------------===//
 
+/// \brief Return true with a diagnostic if the file that MSVC would have found
+/// fails to match the one that Clang would have found with MSVC header search
+/// disabled.
+static bool checkMSVCHeaderSearch(DiagnosticsEngine &Diags,
+                                  const FileEntry *MSFE, const FileEntry *FE,
+                                  SourceLocation IncludeLoc) {
+  if (MSFE && FE != MSFE) {
+    Diags.Report(IncludeLoc, diag::ext_pp_include_search_ms) << MSFE->getName();
+    return true;
+  }
+  return false;
+}
+
+static const char *copyString(StringRef Str, llvm::BumpPtrAllocator &Alloc) {
+  assert(!Str.empty());
+  char *CopyStr = Alloc.Allocate<char>(Str.size()+1);
+  std::copy(Str.begin(), Str.end(), CopyStr);
+  CopyStr[Str.size()] = '\0';
+  return CopyStr;
+}
 
 /// LookupFile - Given a "foo" or \<foo> reference, look up the indicated file,
 /// return null on failure.  isAngled indicates whether the file reference is
@@ -539,6 +594,10 @@ const FileEntry *HeaderSearch::LookupFile(
     return FileMgr.getFile(Filename, /*openFile=*/true);
   }
 
+  // This is the header that MSVC's header search would have found.
+  const FileEntry *MSFE = 0;
+  ModuleMap::KnownHeader MSSuggestedModule;
+
   // Unless disabled, check to see if the file is in the #includer's
   // directory.  This cannot be based on CurDir, because each includer could be
   // a #include of a subdirectory (#include "foo/bar.h") and a subsequent
@@ -546,8 +605,8 @@ const FileEntry *HeaderSearch::LookupFile(
   // This search is not done for <> headers.
   if (!Includers.empty() && !isAngled && !NoCurDirSearch) {
     SmallString<1024> TmpDir;
-    for (ArrayRef<const FileEntry *>::iterator I(Includers.begin()),
-         E(Includers.end());
+    for (ArrayRef<const FileEntry *>::iterator I = Includers.begin(),
+                                               E = Includers.end();
          I != E; ++I) {
       const FileEntry *Includer = *I;
       // Concatenate the requested file onto the directory.
@@ -555,8 +614,16 @@ const FileEntry *HeaderSearch::LookupFile(
       TmpDir = Includer->getDir()->getName();
       TmpDir.push_back('/');
       TmpDir.append(Filename.begin(), Filename.end());
+
+      // FIXME: We don't cache the result of getFileInfo across the call to
+      // getFileAndSuggestModule, because it's a reference to an element of
+      // a container that could be reallocated across this call.
+      bool IncluderIsSystemHeader =
+          getFileInfo(Includer).DirInfo != SrcMgr::C_User;
       if (const FileEntry *FE =
-              FileMgr.getFile(TmpDir.str(), /*openFile=*/true)) {
+              getFileAndSuggestModule(*this, TmpDir.str(), Includer->getDir(),
+                                      IncluderIsSystemHeader,
+                                      SuggestedModule)) {
         // Leave CurDir unset.
         // This file is a system header or C++ unfriendly if the old file is.
         //
@@ -582,10 +649,24 @@ const FileEntry *HeaderSearch::LookupFile(
           RelativePath->clear();
           RelativePath->append(Filename.begin(), Filename.end());
         }
-        if (I != Includers.begin())
-          Diags.Report(IncludeLoc, diag::ext_pp_include_search_ms)
-              << FE->getName();
-        return FE;
+        if (I == Includers.begin())
+          return FE;
+
+        // Otherwise, we found the path via MSVC header search rules.  If
+        // -Wmsvc-include is enabled, we have to keep searching to see if we
+        // would've found this header in -I or -isystem directories.
+        if (Diags.getDiagnosticLevel(diag::ext_pp_include_search_ms,
+                                     IncludeLoc) ==
+            DiagnosticsEngine::Ignored) {
+          return FE;
+        } else {
+          MSFE = FE;
+          if (SuggestedModule) {
+            MSSuggestedModule = *SuggestedModule;
+            *SuggestedModule = ModuleMap::KnownHeader();
+          }
+          break;
+        }
       }
     }
   }
@@ -604,28 +685,38 @@ const FileEntry *HeaderSearch::LookupFile(
   // multiply included, and the "pragma once" optimization prevents them from
   // being relex/pp'd, but they would still have to search through a
   // (potentially huge) series of SearchDirs to find it.
-  std::pair<unsigned, unsigned> &CacheLookup =
+  LookupFileCacheInfo &CacheLookup =
     LookupFileCache.GetOrCreateValue(Filename).getValue();
 
   // If the entry has been previously looked up, the first value will be
   // non-zero.  If the value is equal to i (the start point of our search), then
   // this is a matching hit.
-  if (!SkipCache && CacheLookup.first == i+1) {
+  if (!SkipCache && CacheLookup.StartIdx == i+1) {
     // Skip querying potentially lots of directories for this lookup.
-    i = CacheLookup.second;
+    i = CacheLookup.HitIdx;
+    if (CacheLookup.MappedName)
+      Filename = CacheLookup.MappedName;
   } else {
     // Otherwise, this is the first query, or the previous query didn't match
     // our search start.  We will fill in our found location below, so prime the
     // start point value.
-    CacheLookup.first = i+1;
+    CacheLookup.reset(/*StartIdx=*/i+1);
   }
+
+  SmallString<64> MappedName;
 
   // Check each directory in sequence to see if it contains this file.
   for (; i != SearchDirs.size(); ++i) {
     bool InUserSpecifiedSystemFramework = false;
+    bool HasBeenMapped = false;
     const FileEntry *FE =
       SearchDirs[i].LookupFile(Filename, *this, SearchPath, RelativePath,
-                               SuggestedModule, InUserSpecifiedSystemFramework);
+                               SuggestedModule, InUserSpecifiedSystemFramework,
+                               HasBeenMapped, MappedName);
+    if (HasBeenMapped) {
+      CacheLookup.MappedName =
+          copyString(Filename, LookupFileCache.getAllocator());
+    }
     if (!FE) continue;
 
     CurDir = &SearchDirs[i];
@@ -660,9 +751,15 @@ const FileEntry *HeaderSearch::LookupFile(
                                                          SlashPos));
       }
     }
-    
+
+    if (checkMSVCHeaderSearch(Diags, MSFE, FE, IncludeLoc)) {
+      if (SuggestedModule)
+        *SuggestedModule = MSSuggestedModule;
+      return MSFE;
+    }
+
     // Remember this location for the next lookup we do.
-    CacheLookup.second = i;
+    CacheLookup.HitIdx = i;
     return FE;
   }
 
@@ -679,19 +776,33 @@ const FileEntry *HeaderSearch::LookupFile(
       ScratchFilename += '/';
       ScratchFilename += Filename;
 
-      const FileEntry *Result = LookupFile(
+      const FileEntry *FE = LookupFile(
           ScratchFilename, IncludeLoc, /*isAngled=*/true, FromDir, CurDir,
           Includers.front(), SearchPath, RelativePath, SuggestedModule);
-      std::pair<unsigned, unsigned> &CacheLookup 
+
+      if (checkMSVCHeaderSearch(Diags, MSFE, FE, IncludeLoc)) {
+        if (SuggestedModule)
+          *SuggestedModule = MSSuggestedModule;
+        return MSFE;
+      }
+
+      LookupFileCacheInfo &CacheLookup 
         = LookupFileCache.GetOrCreateValue(Filename).getValue();
-      CacheLookup.second
-        = LookupFileCache.GetOrCreateValue(ScratchFilename).getValue().second;
-      return Result;
+      CacheLookup.HitIdx
+        = LookupFileCache.GetOrCreateValue(ScratchFilename).getValue().HitIdx;
+      // FIXME: SuggestedModule.
+      return FE;
     }
   }
 
+  if (checkMSVCHeaderSearch(Diags, MSFE, 0, IncludeLoc)) {
+    if (SuggestedModule)
+      *SuggestedModule = MSSuggestedModule;
+    return MSFE;
+  }
+
   // Otherwise, didn't find it. Remember we didn't find this.
-  CacheLookup.second = SearchDirs.size();
+  CacheLookup.HitIdx = SearchDirs.size();
   return 0;
 }
 
@@ -878,7 +989,19 @@ HeaderFileInfo &HeaderSearch::getFileInfo(const FileEntry *FE) {
   HeaderFileInfo &HFI = FileInfo[FE->getUID()];
   if (ExternalSource && !HFI.Resolved)
     mergeHeaderFileInfo(HFI, ExternalSource->GetHeaderFileInfo(FE));
+  HFI.IsValid = 1;
   return HFI;
+}
+
+bool HeaderSearch::tryGetFileInfo(const FileEntry *FE, HeaderFileInfo &Result) const {
+  if (FE->getUID() >= FileInfo.size())
+    return false;
+  const HeaderFileInfo &HFI = FileInfo[FE->getUID()];
+  if (HFI.IsValid) {
+    Result = HFI;
+    return true;
+  }
+  return false;
 }
 
 bool HeaderSearch::isFileMultipleIncludeGuarded(const FileEntry *File) {
@@ -975,8 +1098,8 @@ bool HeaderSearch::hasModuleMap(StringRef FileName,
     if (!Dir)
       return false;
 
-    // Try to load the "module.map" file in this directory.
-    switch (loadModuleMapFile(Dir, IsSystem)) {
+    // Try to load the module map file in this directory.
+    switch (loadModuleMapFile(Dir, IsSystem, /*IsFramework*/false)) {
     case LMM_NewlyLoaded:
     case LMM_AlreadyLoaded:
       // Success. All of the directories we stepped through inherit this module
@@ -1010,36 +1133,85 @@ HeaderSearch::findModuleForHeader(const FileEntry *File) const {
   return ModMap.findModuleForHeader(File);
 }
 
-bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem) {
-  const DirectoryEntry *Dir = File->getDir();
-  
-  llvm::DenseMap<const DirectoryEntry *, bool>::iterator KnownDir
-    = DirectoryHasModuleMap.find(Dir);
-  if (KnownDir != DirectoryHasModuleMap.end())
-    return !KnownDir->second;
-  
-  bool Result = ModMap.parseModuleMapFile(File, IsSystem);
-  if (!Result && llvm::sys::path::filename(File->getName()) == "module.map") {
-    // If the file we loaded was a module.map, look for the corresponding
-    // module_private.map.
-    SmallString<128> PrivateFilename(Dir->getName());
+static const FileEntry *getPrivateModuleMap(StringRef ModuleMapPath,
+                                            const DirectoryEntry *Directory,
+                                            FileManager &FileMgr) {
+  StringRef Filename = llvm::sys::path::filename(ModuleMapPath);
+  SmallString<128>  PrivateFilename(Directory->getName());
+  if (Filename == "module.map")
     llvm::sys::path::append(PrivateFilename, "module_private.map");
-    if (const FileEntry *PrivateFile = FileMgr.getFile(PrivateFilename))
-      Result = ModMap.parseModuleMapFile(PrivateFile, IsSystem);
-  }
-  
-  DirectoryHasModuleMap[Dir] = !Result;  
-  return Result;
+  else if (Filename == "module.modulemap")
+    llvm::sys::path::append(PrivateFilename, "module.private.modulemap");
+  else
+    return nullptr;
+  return FileMgr.getFile(PrivateFilename);
 }
 
-Module *HeaderSearch::loadFrameworkModule(StringRef Name, 
+bool HeaderSearch::loadModuleMapFile(const FileEntry *File, bool IsSystem) {
+  switch (loadModuleMapFileImpl(File, IsSystem)) {
+  case LMM_AlreadyLoaded:
+  case LMM_NewlyLoaded:
+    return false;
+  case LMM_NoDirectory:
+  case LMM_InvalidModuleMap:
+    return true;
+  }
+  llvm_unreachable("Unknown load module map result");
+}
+
+HeaderSearch::LoadModuleMapResult
+HeaderSearch::loadModuleMapFileImpl(const FileEntry *File, bool IsSystem) {
+  assert(File && "expected FileEntry");
+
+  const DirectoryEntry *Dir = File->getDir();
+  auto KnownDir = DirectoryHasModuleMap.find(Dir);
+  if (KnownDir != DirectoryHasModuleMap.end())
+    return KnownDir->second ? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
+
+  if (ModMap.parseModuleMapFile(File, IsSystem)) {
+    DirectoryHasModuleMap[Dir] = false;
+    return LMM_InvalidModuleMap;
+  }
+
+  // Try to load a corresponding private module map.
+  if (const FileEntry *PMMFile =
+        getPrivateModuleMap(File->getName(), Dir, FileMgr)) {
+    if (ModMap.parseModuleMapFile(PMMFile, IsSystem)) {
+      DirectoryHasModuleMap[Dir] = false;
+      return LMM_InvalidModuleMap;
+    }
+  }
+
+  // This directory has a module map.
+  DirectoryHasModuleMap[Dir] = true;
+  return LMM_NewlyLoaded;
+}
+
+const FileEntry *
+HeaderSearch::lookupModuleMapFile(const DirectoryEntry *Dir, bool IsFramework) {
+  // For frameworks, the preferred spelling is Modules/module.modulemap, but
+  // module.map at the framework root is also accepted.
+  SmallString<128> ModuleMapFileName(Dir->getName());
+  if (IsFramework)
+    llvm::sys::path::append(ModuleMapFileName, "Modules");
+  llvm::sys::path::append(ModuleMapFileName, "module.modulemap");
+  if (const FileEntry *F = FileMgr.getFile(ModuleMapFileName))
+    return F;
+
+  // Continue to allow module.map
+  ModuleMapFileName = Dir->getName();
+  llvm::sys::path::append(ModuleMapFileName, "module.map");
+  return FileMgr.getFile(ModuleMapFileName);
+}
+
+Module *HeaderSearch::loadFrameworkModule(StringRef Name,
                                           const DirectoryEntry *Dir,
                                           bool IsSystem) {
   if (Module *Module = ModMap.findModule(Name))
     return Module;
   
   // Try to load a module map file.
-  switch (loadModuleMapFile(Dir, IsSystem)) {
+  switch (loadModuleMapFile(Dir, IsSystem, /*IsFramework*/true)) {
   case LMM_InvalidModuleMap:
     break;
     
@@ -1051,81 +1223,37 @@ Module *HeaderSearch::loadFrameworkModule(StringRef Name,
     return ModMap.findModule(Name);
   }
 
-  // Figure out the top-level framework directory and the submodule path from
-  // that top-level framework to the requested framework.
-  SmallVector<std::string, 2> SubmodulePath;
-  SubmodulePath.push_back(Name);
-  const DirectoryEntry *TopFrameworkDir
-    = ::getTopFrameworkDir(FileMgr, Dir->getName(), SubmodulePath);
 
-
-  // Try to infer a module map from the top-level framework directory.
-  Module *Result = ModMap.inferFrameworkModule(SubmodulePath.back(), 
-                                               TopFrameworkDir,
-                                               IsSystem,
-                                               /*Parent=*/0);
-  if (!Result)
-    return 0;
-  
-  // Follow the submodule path to find the requested (sub)framework module
-  // within the top-level framework module.
-  SubmodulePath.pop_back();
-  while (!SubmodulePath.empty() && Result) {
-    Result = ModMap.lookupModuleQualified(SubmodulePath.back(), Result);
-    SubmodulePath.pop_back();
-  }
-  return Result;
+  // Try to infer a module map from the framework directory.
+  return ModMap.inferFrameworkModule(Name, Dir, IsSystem, /*Parent=*/0);
 }
 
 
 HeaderSearch::LoadModuleMapResult 
-HeaderSearch::loadModuleMapFile(StringRef DirName, bool IsSystem) {
+HeaderSearch::loadModuleMapFile(StringRef DirName, bool IsSystem,
+                                bool IsFramework) {
   if (const DirectoryEntry *Dir = FileMgr.getDirectory(DirName))
-    return loadModuleMapFile(Dir, IsSystem);
+    return loadModuleMapFile(Dir, IsSystem, IsFramework);
   
   return LMM_NoDirectory;
 }
 
 HeaderSearch::LoadModuleMapResult 
-HeaderSearch::loadModuleMapFile(const DirectoryEntry *Dir, bool IsSystem) {
-  llvm::DenseMap<const DirectoryEntry *, bool>::iterator KnownDir
-    = DirectoryHasModuleMap.find(Dir);
+HeaderSearch::loadModuleMapFile(const DirectoryEntry *Dir, bool IsSystem,
+                                bool IsFramework) {
+  auto KnownDir = DirectoryHasModuleMap.find(Dir);
   if (KnownDir != DirectoryHasModuleMap.end())
     return KnownDir->second? LMM_AlreadyLoaded : LMM_InvalidModuleMap;
-  
-  SmallString<128> ModuleMapFileName;
-  ModuleMapFileName += Dir->getName();
-  unsigned ModuleMapDirNameLen = ModuleMapFileName.size();
-  llvm::sys::path::append(ModuleMapFileName, "module.map");
-  if (const FileEntry *ModuleMapFile = FileMgr.getFile(ModuleMapFileName)) {
-    // We have found a module map file. Try to parse it.
-    if (ModMap.parseModuleMapFile(ModuleMapFile, IsSystem)) {
-      // No suitable module map.
-      DirectoryHasModuleMap[Dir] = false;
-      return LMM_InvalidModuleMap;
-    }
 
-    // This directory has a module map.
-    DirectoryHasModuleMap[Dir] = true;
-    
-    // Check whether there is a private module map that we need to load as well.
-    ModuleMapFileName.erase(ModuleMapFileName.begin() + ModuleMapDirNameLen,
-                            ModuleMapFileName.end());
-    llvm::sys::path::append(ModuleMapFileName, "module_private.map");
-    if (const FileEntry *PrivateModuleMapFile
-                                        = FileMgr.getFile(ModuleMapFileName)) {
-      if (ModMap.parseModuleMapFile(PrivateModuleMapFile, IsSystem)) {
-        // No suitable module map.
-        DirectoryHasModuleMap[Dir] = false;
-        return LMM_InvalidModuleMap;
-      }      
-    }
-    
-    return LMM_NewlyLoaded;
+  if (const FileEntry *ModuleMapFile = lookupModuleMapFile(Dir, IsFramework)) {
+    LoadModuleMapResult Result = loadModuleMapFileImpl(ModuleMapFile, IsSystem);
+    // Add Dir explicitly in case ModuleMapFile is in a subdirectory.
+    // E.g. Foo.framework/Modules/module.modulemap
+    //      ^Dir                  ^ModuleMapFile
+    if (Result == LMM_NewlyLoaded)
+      DirectoryHasModuleMap[Dir] = true;
+    return Result;
   }
-  
-  // No suitable module map.
-  DirectoryHasModuleMap[Dir] = false;
   return LMM_InvalidModuleMap;
 }
 
@@ -1163,7 +1291,7 @@ void HeaderSearch::collectAllModules(SmallVectorImpl<Module *> &Modules) {
       continue;
     
     // Try to load a module map file for the search directory.
-    loadModuleMapFile(SearchDirs[Idx].getDir(), IsSystem);
+    loadModuleMapFile(SearchDirs[Idx].getDir(), IsSystem, /*IsFramework*/false);
     
     // Try to load module map files for immediate subdirectories of this search
     // directory.
@@ -1188,7 +1316,8 @@ void HeaderSearch::loadTopLevelSystemModules() {
 
     // Try to load a module map file for the search directory.
     loadModuleMapFile(SearchDirs[Idx].getDir(),
-                      SearchDirs[Idx].isSystemHeaderDirectory());
+                      SearchDirs[Idx].isSystemHeaderDirectory(),
+                      SearchDirs[Idx].isFramework());
   }
 }
 
@@ -1201,7 +1330,8 @@ void HeaderSearch::loadSubdirectoryModuleMaps(DirectoryLookup &SearchDir) {
   llvm::sys::path::native(SearchDir.getDir()->getName(), DirNative);
   for (llvm::sys::fs::directory_iterator Dir(DirNative.str(), EC), DirEnd;
        Dir != DirEnd && !EC; Dir.increment(EC)) {
-    loadModuleMapFile(Dir->path(), SearchDir.isSystemHeaderDirectory());
+    loadModuleMapFile(Dir->path(), SearchDir.isSystemHeaderDirectory(),
+                      SearchDir.isFramework());
   }
 
   SearchDir.setSearchedAllModuleMaps(true);

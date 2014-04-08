@@ -389,44 +389,6 @@ public:
     return getArg(Arg).get<IdentifierLoc*>();
   }
 
-  class arg_iterator {
-    ArgsUnion const *X;
-    unsigned Idx;
-  public:
-    arg_iterator(ArgsUnion const *x, unsigned idx) : X(x), Idx(idx) {}
-
-    arg_iterator& operator++() {
-      ++Idx;
-      return *this;
-    }
-
-    bool operator==(const arg_iterator& I) const {
-      assert (X == I.X &&
-              "compared arg_iterators are for different argument lists");
-      return Idx == I.Idx;
-    }
-
-    bool operator!=(const arg_iterator& I) const {
-      return !operator==(I);
-    }
-
-    ArgsUnion operator*() const {
-      return X[Idx];
-    }
-
-    unsigned getArgNum() const {
-      return Idx+1;
-    }
-  };
-
-  arg_iterator arg_begin() const {
-    return arg_iterator(getArgsBuffer(), 0);
-  }
-
-  arg_iterator arg_end() const {
-    return arg_iterator(getArgsBuffer(), NumArgs);
-  }
-
   const AvailabilityChange &getAvailabilityIntroduced() const {
     assert(getKind() == AT_Availability && "Not an availability attribute");
     return getAvailabilitySlot(IntroducedSlot);
@@ -493,7 +455,7 @@ public:
   unsigned getMaxArgs() const;
   bool diagnoseAppertainsTo(class Sema &S, const Decl *D) const;
   bool diagnoseLangOpts(class Sema &S) const;
-  bool existsInTarget(llvm::Triple T) const;
+  bool existsInTarget(const llvm::Triple &T) const;
   bool isKnownToGCC() const;
 
   /// \brief If the parsed attribute has a semantic equivalent, and it would
@@ -693,40 +655,6 @@ public:
   }
 };
 
-/// addAttributeLists - Add two AttributeLists together
-/// The right-hand list is appended to the left-hand list, if any
-/// A pointer to the joined list is returned.
-/// Note: the lists are not left unmodified.
-inline AttributeList *addAttributeLists(AttributeList *Left,
-                                        AttributeList *Right) {
-  if (!Left)
-    return Right;
-
-  AttributeList *next = Left, *prev;
-  do {
-    prev = next;
-    next = next->getNext();
-  } while (next);
-  prev->setNext(Right);
-  return Left;
-}
-
-/// CXX11AttributeList - A wrapper around a C++11 attribute list.
-/// Stores, in addition to the list proper, whether or not an actual list was
-/// (as opposed to an empty list, which may be ill-formed in some places) and
-/// the source range of the list.
-struct CXX11AttributeList { 
-  AttributeList *AttrList;
-  SourceRange Range;
-  bool HasAttr;
-  CXX11AttributeList (AttributeList *attrList, SourceRange range, bool hasAttr)
-    : AttrList(attrList), Range(range), HasAttr (hasAttr) {
-  }
-  CXX11AttributeList ()
-    : AttrList(0), Range(), HasAttr(false) {
-  }
-};
-
 /// ParsedAttributes - A collection of parsed attributes.  Currently
 /// we don't differentiate between the various attribute syntaxes,
 /// which is basically silly.
@@ -739,10 +667,7 @@ public:
     : pool(factory), list(0) {
   }
 
-  ParsedAttributes(ParsedAttributes &attrs)
-    : pool(attrs.pool), list(attrs.list) {
-    attrs.list = 0;
-  }
+  ParsedAttributes(const ParsedAttributes &) LLVM_DELETED_FUNCTION;
 
   AttributePool &getPool() const { return pool; }
 
@@ -913,7 +838,8 @@ enum AttributeDeclKind {
   ExpectedObjCInterfaceDeclInitMethod,
   ExpectedFunctionVariableOrClass,
   ExpectedObjectiveCProtocol,
-  ExpectedFunctionGlobalVarMethodOrProperty
+  ExpectedFunctionGlobalVarMethodOrProperty,
+  ExpectedStructOrTypedef
 };
 
 }  // end namespace clang

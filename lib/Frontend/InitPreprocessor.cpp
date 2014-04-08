@@ -315,9 +315,11 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     else if (!LangOpts.GNUMode && LangOpts.Digraphs)
       Builder.defineMacro("__STDC_VERSION__", "199409L");
   } else {
-    // FIXME: Use the right value for __cplusplus for C++1y once one is chosen.
-    if (LangOpts.CPlusPlus1y)
-      Builder.defineMacro("__cplusplus", "201305L");
+    // C++1y [cpp.predefined]p1:
+    //   The name __cplusplus is defined to the value 201402L when compiling a
+    //   C++ translation unit.
+     if (LangOpts.CPlusPlus1y)
+      Builder.defineMacro("__cplusplus", "201402L");
     // C++11 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201103L when compiling a
     //   C++ translation unit.
@@ -515,10 +517,6 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
       Builder.defineMacro("_WCHAR_T_DEFINED");
       Builder.defineMacro("_NATIVE_WCHAR_T_DEFINED");
     }
-    if (LangOpts.CPlusPlus) {
-      // FIXME: Support Microsoft's __identifier extension in the lexer.
-      Builder.append("#define __identifier(x) x");
-    }
   }
 
   if (LangOpts.Optimize)
@@ -539,11 +537,13 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
   Builder.defineMacro("__ORDER_LITTLE_ENDIAN__", "1234");
   Builder.defineMacro("__ORDER_BIG_ENDIAN__",    "4321");
   Builder.defineMacro("__ORDER_PDP_ENDIAN__",    "3412");
-  if (TI.isBigEndian())
+  if (TI.isBigEndian()) {
     Builder.defineMacro("__BYTE_ORDER__", "__ORDER_BIG_ENDIAN__");
-  else
+    Builder.defineMacro("__BIG_ENDIAN__");
+  } else {
     Builder.defineMacro("__BYTE_ORDER__", "__ORDER_LITTLE_ENDIAN__");
-
+    Builder.defineMacro("__LITTLE_ENDIAN__");
+  }
 
   if (TI.getPointerWidth(0) == 64 && TI.getLongWidth() == 64
       && TI.getIntWidth() == 32) {
@@ -692,8 +692,10 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   if (LangOpts.getStackProtector() == LangOptions::SSPOn)
     Builder.defineMacro("__SSP__");
+  else if (LangOpts.getStackProtector() == LangOptions::SSPStrong)
+    Builder.defineMacro("__SSP_STRONG__", "2");
   else if (LangOpts.getStackProtector() == LangOptions::SSPReq)
-    Builder.defineMacro("__SSP_ALL__", "2");
+    Builder.defineMacro("__SSP_ALL__", "3");
 
   if (FEOpts.ProgramAction == frontend::RewriteObjC)
     Builder.defineMacro("__weak", "__attribute__((objc_gc(weak)))");
@@ -716,12 +718,12 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
 
   // OpenMP definition
   if (LangOpts.OpenMP) {
-    // OpenMP 2.2: 
+    // OpenMP 2.2:
     //   In implementations that support a preprocessor, the _OPENMP
     //   macro name is defined to have the decimal value yyyymm where
     //   yyyy and mm are the year and the month designations of the
     //   version of the OpenMP API that the implementation support.
-    Builder.defineMacro("_OPENMP", "201107");
+    Builder.defineMacro("_OPENMP", "201307");
   }
 
   // Get other target #defines.

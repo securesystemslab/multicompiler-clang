@@ -32,7 +32,7 @@ protected:
   }
 
   static std::string format(llvm::StringRef Code) {
-    FormatStyle Style = getGoogleProtoStyle();
+    FormatStyle Style = getGoogleStyle(FormatStyle::LK_Proto);
     Style.ColumnLimit = 60; // To make writing tests easier.
     return format(Code, 0, Code.size(), Style);
   }
@@ -74,8 +74,17 @@ TEST_F(FormatTestProto, UnderstandsReturns) {
 
 TEST_F(FormatTestProto, MessageFieldAttributes) {
   verifyFormat("optional string test = 1 [default = \"test\"];");
+  verifyFormat("optional bool a = 1 [default = true, deprecated = true];");
+  verifyFormat("optional LongMessageType long_proto_field = 1\n"
+               "    [default = REALLY_REALLY_LONG_CONSTANT_VALUE,\n"
+               "     deprecated = true];");
   verifyFormat("optional LongMessageType long_proto_field = 1\n"
                "    [default = REALLY_REALLY_LONG_CONSTANT_VALUE];");
+  verifyFormat("repeated double value = 1\n"
+               "    [(aaaaaaa.aaaaaaaaa) = {aaaaaaaaaaaaaaaaa : AAAAAAAA}];");
+  verifyFormat("repeated double value = 1\n"
+               "    [(aaaaaaa.aaaaaaaaa) = {aaaaaaaaaaaaaaaa : AAAAAAAAAA,\n"
+               "                            bbbbbbbbbbbbbbbb : BBBBBBBBBB}];");
 }
 
 TEST_F(FormatTestProto, FormatsOptions) {

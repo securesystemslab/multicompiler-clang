@@ -12,6 +12,8 @@
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "clang/Tooling/Tooling.h"
+#include "llvm/ADT/Triple.h"
+#include "llvm/Support/Host.h"
 #include "gtest/gtest.h"
 
 namespace clang {
@@ -103,12 +105,13 @@ TEST(NameableDeclaration, REMatchesVariousDecls) {
 
 TEST(DeclarationMatcher, MatchClass) {
   DeclarationMatcher ClassMatcher(recordDecl());
-#if !defined(_MSC_VER)
-  EXPECT_FALSE(matches("", ClassMatcher));
-#else
-  // Matches class type_info.
-  EXPECT_TRUE(matches("", ClassMatcher));
-#endif
+  llvm::Triple Triple(llvm::sys::getDefaultTargetTriple());
+  if (Triple.getOS() != llvm::Triple::Win32 ||
+      Triple.getEnvironment() != llvm::Triple::MSVC)
+    EXPECT_FALSE(matches("", ClassMatcher));
+  else
+    // Matches class type_info.
+    EXPECT_TRUE(matches("", ClassMatcher));
 
   DeclarationMatcher ClassX = recordDecl(recordDecl(hasName("X")));
   EXPECT_TRUE(matches("class X;", ClassX));
@@ -663,7 +666,7 @@ public:
       : Id(Id), ExpectedCount(ExpectedCount), Count(0),
         ExpectedName(ExpectedName) {}
 
-  void onEndOfTranslationUnit() LLVM_OVERRIDE {
+  void onEndOfTranslationUnit() override {
     if (ExpectedCount != -1)
       EXPECT_EQ(ExpectedCount, Count);
     if (!ExpectedName.empty())
@@ -1000,7 +1003,7 @@ TEST(Matcher, Call) {
 }
 
 TEST(Matcher, Lambda) {
-  EXPECT_TRUE(matches("auto f = [&] (int i) { return i; };",
+  EXPECT_TRUE(matches("auto f = [] (int i) { return i; };",
                       lambdaExpr()));
 }
 
@@ -1038,7 +1041,7 @@ TEST(HasType, MatchesAsString) {
   EXPECT_TRUE(matches("namespace ns { struct A {}; }  struct B { ns::A a; };",
       fieldDecl(hasType(asString("ns::A")))));
   EXPECT_TRUE(matches("namespace { struct A {}; }  struct B { A a; };",
-      fieldDecl(hasType(asString("struct <anonymous>::A")))));
+      fieldDecl(hasType(asString("struct (anonymous namespace)::A")))));
 }
 
 TEST(Matcher, OverloadedOperatorCall) {
@@ -1300,15 +1303,16 @@ TEST(Function, MatchesFunctionDeclarations) {
   EXPECT_TRUE(matches("void f() { f(); }", CallFunctionF));
   EXPECT_TRUE(notMatches("void f() { }", CallFunctionF));
 
-#if !defined(_MSC_VER)
-  // FIXME: Make this work for MSVC.
-  // Dependent contexts, but a non-dependent call.
-  EXPECT_TRUE(matches("void f(); template <int N> void g() { f(); }",
-                      CallFunctionF));
-  EXPECT_TRUE(
-      matches("void f(); template <int N> struct S { void g() { f(); } };",
-              CallFunctionF));
-#endif
+  if (llvm::Triple(llvm::sys::getDefaultTargetTriple()).getOS() !=
+      llvm::Triple::Win32) {
+    // FIXME: Make this work for MSVC.
+    // Dependent contexts, but a non-dependent call.
+    EXPECT_TRUE(matches("void f(); template <int N> void g() { f(); }",
+                        CallFunctionF));
+    EXPECT_TRUE(
+        matches("void f(); template <int N> struct S { void g() { f(); } };",
+                CallFunctionF));
+  }
 
   // Depedent calls don't match.
   EXPECT_TRUE(
@@ -1527,6 +1531,19 @@ TEST(Matcher, MatchesDeclarationReferenceTemplateArgument) {
       "A<int> a;",
       classTemplateSpecializationDecl(hasAnyTemplateArgument(
           refersToDeclaration(decl())))));
+
+  EXPECT_TRUE(matches(
+      "struct B { int next; };"
+      "template<int(B::*next_ptr)> struct A {};"
+      "A<&B::next> a;",
+      templateSpecializationType(hasAnyTemplateArgument(isExpr(
+          hasDescendant(declRefExpr(to(fieldDecl(hasName("next"))))))))));
+
+  EXPECT_TRUE(notMatches(
+      "template <typename T> struct A {};"
+      "A<int> a;",
+      templateSpecializationType(hasAnyTemplateArgument(
+          refersToDeclaration(decl())))));
 }
 
 TEST(Matcher, MatchesSpecificArgument) {
@@ -1539,6 +1556,17 @@ TEST(Matcher, MatchesSpecificArgument) {
       "template<typename T, typename U> class A {};"
       "A<int, bool> a;",
       classTemplateSpecializationDecl(hasTemplateArgument(
+          1, refersToType(asString("int"))))));
+
+  EXPECT_TRUE(matches(
+      "template<typename T, typename U> class A {};"
+      "A<bool, int> a;",
+      templateSpecializationType(hasTemplateArgument(
+          1, refersToType(asString("int"))))));
+  EXPECT_TRUE(notMatches(
+      "template<typename T, typename U> class A {};"
+      "A<int, bool> a;",
+      templateSpecializationType(hasTemplateArgument(
           1, refersToType(asString("int"))))));
 }
 
@@ -1559,6 +1587,13 @@ TEST(Matcher, MatchesVirtualMethod) {
       methodDecl(isVirtual(), hasName("::X::f"))));
   EXPECT_TRUE(notMatches("class X { int f(); };",
       methodDecl(isVirtual())));
+}
+
+TEST(Matcher, MatchesPureMethod) {
+  EXPECT_TRUE(matches("class X { virtual int f() = 0; };",
+      methodDecl(isPure(), hasName("::X::f"))));
+  EXPECT_TRUE(notMatches("class X { int f(); };",
+      methodDecl(isPure())));
 }
 
 TEST(Matcher, MatchesConstMethod) {
@@ -1635,6 +1670,17 @@ TEST(Matcher, ConstructorArgumentCount) {
   EXPECT_TRUE(
       notMatches("class X { public: X(int, int); }; void x() { X x(0, 0); }",
                  Constructor1Arg));
+}
+
+TEST(Matcher, ConstructorListInitialization) {
+  StatementMatcher ConstructorListInit = constructExpr(isListInitialization());
+
+  EXPECT_TRUE(
+      matches("class X { public: X(int); }; void x() { X x{0}; }",
+              ConstructorListInit));
+  EXPECT_FALSE(
+      matches("class X { public: X(int); }; void x() { X x(0); }",
+              ConstructorListInit));
 }
 
 TEST(Matcher,ThisExpr) {
@@ -2339,6 +2385,11 @@ TEST(For, ForLoopInternals) {
                       forStmt(hasLoopInit(anything()))));
 }
 
+TEST(For, ForRangeLoopInternals) {
+  EXPECT_TRUE(matches("void f(){ int a[] {1, 2}; for (int i : a); }",
+                      forRangeStmt(hasLoopVariable(anything()))));
+}
+
 TEST(For, NegativeForLoopInternals) {
   EXPECT_TRUE(notMatches("void f(){ for (int i = 0; ; ++i); }",
                          forStmt(hasCondition(expr()))));
@@ -2890,6 +2941,15 @@ TEST(DeclarationStatement, DoesNotMatchCompoundStatements) {
 
 TEST(DeclarationStatement, MatchesVariableDeclarationStatements) {
   EXPECT_TRUE(matches("void x() { int a; }", declStmt()));
+}
+
+TEST(ExprWithCleanups, MatchesExprWithCleanups) {
+  EXPECT_TRUE(matches("struct Foo { ~Foo(); };"
+                      "const Foo f = Foo();",
+                      varDecl(hasInitializer(exprWithCleanups()))));
+  EXPECT_FALSE(matches("struct Foo { };"
+                      "const Foo f = Foo();",
+                      varDecl(hasInitializer(exprWithCleanups()))));
 }
 
 TEST(InitListExpression, MatchesInitListExpression) {
@@ -3617,12 +3677,16 @@ TEST(TypeMatching, MatchesVariableArrayType) {
 }
 
 TEST(TypeMatching, MatchesAtomicTypes) {
-  EXPECT_TRUE(matches("_Atomic(int) i;", atomicType()));
+  if (llvm::Triple(llvm::sys::getDefaultTargetTriple()).getOS() !=
+      llvm::Triple::Win32) {
+    // FIXME: Make this work for MSVC.
+    EXPECT_TRUE(matches("_Atomic(int) i;", atomicType()));
 
-  EXPECT_TRUE(matches("_Atomic(int) i;",
-                      atomicType(hasValueType(isInteger()))));
-  EXPECT_TRUE(notMatches("_Atomic(float) f;",
-                         atomicType(hasValueType(isInteger()))));
+    EXPECT_TRUE(matches("_Atomic(int) i;",
+                        atomicType(hasValueType(isInteger()))));
+    EXPECT_TRUE(notMatches("_Atomic(float) f;",
+                           atomicType(hasValueType(isInteger()))));
+  }
 }
 
 TEST(TypeMatching, MatchesAutoTypes) {
@@ -4111,12 +4175,13 @@ TEST(MatchFinder, InterceptsStartOfTranslationUnit) {
   MatchFinder Finder;
   VerifyStartOfTranslationUnit VerifyCallback;
   Finder.addMatcher(decl(), &VerifyCallback);
-  OwningPtr<FrontendActionFactory> Factory(newFrontendActionFactory(&Finder));
+  std::unique_ptr<FrontendActionFactory> Factory(
+      newFrontendActionFactory(&Finder));
   ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), "int x;"));
   EXPECT_TRUE(VerifyCallback.Called);
 
   VerifyCallback.Called = false;
-  OwningPtr<ASTUnit> AST(tooling::buildASTFromCode("int x;"));
+  std::unique_ptr<ASTUnit> AST(tooling::buildASTFromCode("int x;"));
   ASSERT_TRUE(AST.get());
   Finder.matchAST(AST->getASTContext());
   EXPECT_TRUE(VerifyCallback.Called);
@@ -4138,12 +4203,13 @@ TEST(MatchFinder, InterceptsEndOfTranslationUnit) {
   MatchFinder Finder;
   VerifyEndOfTranslationUnit VerifyCallback;
   Finder.addMatcher(decl(), &VerifyCallback);
-  OwningPtr<FrontendActionFactory> Factory(newFrontendActionFactory(&Finder));
+  std::unique_ptr<FrontendActionFactory> Factory(
+      newFrontendActionFactory(&Finder));
   ASSERT_TRUE(tooling::runToolOnCode(Factory->create(), "int x;"));
   EXPECT_TRUE(VerifyCallback.Called);
 
   VerifyCallback.Called = false;
-  OwningPtr<ASTUnit> AST(tooling::buildASTFromCode("int x;"));
+  std::unique_ptr<ASTUnit> AST(tooling::buildASTFromCode("int x;"));
   ASSERT_TRUE(AST.get());
   Finder.matchAST(AST->getASTContext());
   EXPECT_TRUE(VerifyCallback.Called);
@@ -4204,7 +4270,6 @@ TEST(EqualsBoundNodeMatcher, Type) {
 }
 
 TEST(EqualsBoundNodeMatcher, UsingForEachDescendant) {
-
   EXPECT_TRUE(matchAndVerifyResultTrue(
       "int f() {"
       "  if (1) {"
@@ -4236,6 +4301,38 @@ TEST(EqualsBoundNodeMatcher, FiltersMatchedCombinations) {
           hasName("f"), forEachDescendant(varDecl().bind("d")),
           forEachDescendant(declRefExpr(to(decl(equalsBoundNode("d")))))),
       new VerifyIdIsBoundTo<VarDecl>("d", 5)));
+}
+
+TEST(EqualsBoundNodeMatcher, UnlessDescendantsOfAncestorsMatch) {
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "struct StringRef { int size() const; const char* data() const; };"
+      "void f(StringRef v) {"
+      "  v.data();"
+      "}",
+      memberCallExpr(
+          callee(methodDecl(hasName("data"))),
+          on(declRefExpr(to(varDecl(hasType(recordDecl(hasName("StringRef"))))
+                                .bind("var")))),
+          unless(hasAncestor(stmt(hasDescendant(memberCallExpr(
+              callee(methodDecl(anyOf(hasName("size"), hasName("length")))),
+              on(declRefExpr(to(varDecl(equalsBoundNode("var")))))))))))
+          .bind("data"),
+      new VerifyIdIsBoundTo<Expr>("data", 1)));
+
+  EXPECT_FALSE(matches(
+      "struct StringRef { int size() const; const char* data() const; };"
+      "void f(StringRef v) {"
+      "  v.data();"
+      "  v.size();"
+      "}",
+      memberCallExpr(
+          callee(methodDecl(hasName("data"))),
+          on(declRefExpr(to(varDecl(hasType(recordDecl(hasName("StringRef"))))
+                                .bind("var")))),
+          unless(hasAncestor(stmt(hasDescendant(memberCallExpr(
+              callee(methodDecl(anyOf(hasName("size"), hasName("length")))),
+              on(declRefExpr(to(varDecl(equalsBoundNode("var")))))))))))
+          .bind("data")));
 }
 
 } // end namespace ast_matchers

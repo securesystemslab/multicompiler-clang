@@ -158,7 +158,7 @@ void CodeGenFunction::EmitReturnBlock() {
   // cleans up functions which started with a unified return block.
   if (ReturnBlock.getBlock()->hasOneUse()) {
     llvm::BranchInst *BI =
-      dyn_cast<llvm::BranchInst>(*ReturnBlock.getBlock()->use_begin());
+      dyn_cast<llvm::BranchInst>(*ReturnBlock.getBlock()->user_begin());
     if (BI && BI->isUnconditional() &&
         BI->getSuccessor(0) == ReturnBlock.getBlock()) {
       // Reset insertion point, including debug location, and delete the
@@ -276,6 +276,14 @@ void CodeGenFunction::FinishFunction(SourceLocation EndLoc) {
 
   if (CGM.getCodeGenOpts().EmitDeclMetadata)
     EmitDeclMetadata();
+
+  for (SmallVectorImpl<std::pair<llvm::Instruction *, llvm::Value *> >::iterator
+           I = DeferredReplacements.begin(),
+           E = DeferredReplacements.end();
+       I != E; ++I) {
+    I->first->replaceAllUsesWith(I->second);
+    I->first->eraseFromParent();
+  }
 }
 
 /// ShouldInstrumentFunction - Return true if the current function should be
@@ -331,6 +339,8 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
   // Each MDNode is a list in the form of "key", N number of values which is
   // the same number of values as their are kernel arguments.
 
+  const PrintingPolicy &Policy = ASTCtx.getPrintingPolicy();
+
   // MDNode for the kernel argument address space qualifiers.
   SmallVector<llvm::Value*, 8> addressQuals;
   addressQuals.push_back(llvm::MDString::get(Context, "kernel_arg_addr_space"));
@@ -364,7 +374,8 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
         pointeeTy.getAddressSpace())));
 
       // Get argument type name.
-      std::string typeName = pointeeTy.getUnqualifiedType().getAsString() + "*";
+      std::string typeName =
+          pointeeTy.getUnqualifiedType().getAsString(Policy) + "*";
 
       // Turn "unsigned type" to "utype"
       std::string::size_type pos = typeName.find("unsigned");
@@ -386,11 +397,11 @@ static void GenOpenCLArgMetadata(const FunctionDecl *FD, llvm::Function *Fn,
       if (ty->isImageType())
         AddrSpc =
           CGM.getContext().getTargetAddressSpace(LangAS::opencl_global);
-      
+
       addressQuals.push_back(Builder.getInt32(AddrSpc));
 
       // Get argument type name.
-      std::string typeName = ty.getUnqualifiedType().getAsString();
+      std::string typeName = ty.getUnqualifiedType().getAsString(Policy);
 
       // Turn "unsigned type" to "utype"
       std::string::size_type pos = typeName.find("unsigned");
@@ -510,17 +521,15 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
 
   // Pass inline keyword to optimizer if it appears explicitly on any
   // declaration. Also, in the case of -fno-inline attach NoInline
-  // attribute to all function that are not marked AlwaysInline or ForceInline.
+  // attribute to all function that are not marked AlwaysInline.
   if (const FunctionDecl *FD = dyn_cast_or_null<FunctionDecl>(D)) {
     if (!CGM.getCodeGenOpts().NoInline) {
-      for (FunctionDecl::redecl_iterator RI = FD->redecls_begin(),
-             RE = FD->redecls_end(); RI != RE; ++RI)
+      for (auto RI : FD->redecls())
         if (RI->isInlineSpecified()) {
           Fn->addFnAttr(llvm::Attribute::InlineHint);
           break;
         }
-    } else if (!FD->hasAttr<AlwaysInlineAttr>() &&
-               !FD->hasAttr<ForceInlineAttr>())
+    } else if (!FD->hasAttr<AlwaysInlineAttr>())
       Fn->addFnAttr(llvm::Attribute::NoInline);
   }
 
@@ -582,8 +591,6 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   if (CGM.getCodeGenOpts().InstrumentForProfiling)
     EmitMCountInstrumentation();
 
-  PGO.assignRegionCounters(GD);
-
   if (RetTy->isVoidType()) {
     // Void type; nothing to return.
     ReturnValue = 0;
@@ -592,6 +599,14 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
     // Indirect aggregate return; emit returned value directly into sret slot.
     // This reduces code size, and affects correctness in C++.
     ReturnValue = CurFn->arg_begin();
+  } else if (CurFnInfo->getReturnInfo().getKind() == ABIArgInfo::InAlloca &&
+             !hasScalarEvaluationKind(CurFnInfo->getReturnType())) {
+    // Load the sret pointer from the argument struct and return into that.
+    unsigned Idx = CurFnInfo->getReturnInfo().getInAllocaFieldIndex();
+    llvm::Function::arg_iterator EI = CurFn->arg_end();
+    --EI;
+    llvm::Value *Addr = Builder.CreateStructGEP(EI, Idx);
+    ReturnValue = Builder.CreateLoad(Addr, "agg.result");
   } else {
     ReturnValue = CreateIRTemp(RetTy, "retval");
 
@@ -664,6 +679,26 @@ void CodeGenFunction::EmitFunctionBody(FunctionArgList &Args,
     EmitStmt(Body);
 }
 
+/// When instrumenting to collect profile data, the counts for some blocks
+/// such as switch cases need to not include the fall-through counts, so
+/// emit a branch around the instrumentation code. When not instrumenting,
+/// this just calls EmitBlock().
+void CodeGenFunction::EmitBlockWithFallThrough(llvm::BasicBlock *BB,
+                                               RegionCounter &Cnt) {
+  llvm::BasicBlock *SkipCountBB = 0;
+  if (HaveInsertPoint() && CGM.getCodeGenOpts().ProfileInstrGenerate) {
+    // When instrumenting for profiling, the fallthrough to certain
+    // statements needs to skip over the instrumentation code so that we
+    // get an accurate count.
+    SkipCountBB = createBasicBlock("skipcount");
+    EmitBranch(SkipCountBB);
+  }
+  EmitBlock(BB);
+  Cnt.beginRegion(Builder, /*AddIncomingFallThrough=*/true);
+  if (SkipCountBB)
+    EmitBlock(SkipCountBB);
+}
+
 /// Tries to mark the given function nounwind based on the
 /// non-existence of any throwing calls within it.  We believe this is
 /// lightweight enough to do at -O0.
@@ -728,6 +763,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   StartFunction(GD, ResTy, Fn, FnInfo, Args, BodyRange.getBegin());
 
   // Generate the body of the function.
+  PGO.assignRegionCounters(GD.getDecl(), CurFn);
   if (isa<CXXDestructorDecl>(FD))
     EmitDestructorBody(Args);
   else if (isa<CXXConstructorDecl>(FD))
@@ -788,7 +824,7 @@ void CodeGenFunction::GenerateCode(GlobalDecl GD, llvm::Function *Fn,
   if (!CurFn->doesNotThrow())
     TryMarkNoThrow(CurFn);
 
-  PGO.emitWriteoutFunction(CurGD);
+  PGO.emitInstrumentationData();
   PGO.destroyRegionCounters();
 }
 
@@ -893,10 +929,11 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
   Cond = Cond->IgnoreParens();
 
   if (const BinaryOperator *CondBOp = dyn_cast<BinaryOperator>(Cond)) {
-    RegionCounter Cnt = getPGORegionCounter(CondBOp);
 
     // Handle X && Y in a condition.
     if (CondBOp->getOpcode() == BO_LAnd) {
+      RegionCounter Cnt = getPGORegionCounter(CondBOp);
+
       // If we have "1 && X", simplify the code.  "0 && X" would have constant
       // folded if the case was simple enough.
       bool ConstantBool = false;
@@ -933,13 +970,13 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
       eval.begin(*this);
       EmitBranchOnBoolExpr(CondBOp->getRHS(), TrueBlock, FalseBlock, TrueCount);
       eval.end(*this);
-      Cnt.adjustForControlFlow();
-      Cnt.applyAdjustmentsToRegion();
 
       return;
     }
 
     if (CondBOp->getOpcode() == BO_LOr) {
+      RegionCounter Cnt = getPGORegionCounter(CondBOp);
+
       // If we have "0 || X", simplify the code.  "1 || X" would have constant
       // folded if the case was simple enough.
       bool ConstantBool = false;
@@ -979,8 +1016,6 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
       EmitBranchOnBoolExpr(CondBOp->getRHS(), TrueBlock, FalseBlock, RHSCount);
 
       eval.end(*this);
-      Cnt.adjustForControlFlow();
-      Cnt.applyAdjustmentsToRegion();
 
       return;
     }
@@ -1013,7 +1048,7 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
     // the conditional operator.
     uint64_t LHSScaledTrueCount = 0;
     if (TrueCount) {
-      double LHSRatio = Cnt.getCount() / (double) PGO.getCurrentRegionCount();
+      double LHSRatio = Cnt.getCount() / (double) Cnt.getParentCount();
       LHSScaledTrueCount = TrueCount * LHSRatio;
     }
 
@@ -1026,7 +1061,6 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
 
     cond.begin(*this);
     EmitBlock(RHSBlock);
-    Cnt.beginElseRegion();
     EmitBranchOnBoolExpr(CondOp->getRHS(), TrueBlock, FalseBlock,
                          TrueCount - LHSScaledTrueCount);
     cond.end(*this);
@@ -1046,7 +1080,7 @@ void CodeGenFunction::EmitBranchOnBoolExpr(const Expr *Cond,
 
   // Create branch weights based on the number of times we get here and the
   // number of times the condition should be true.
-  uint64_t CurrentCount = PGO.getCurrentRegionCountWithMin(TrueCount);
+  uint64_t CurrentCount = std::max(PGO.getCurrentRegionCount(), TrueCount);
   llvm::MDNode *Weights = PGO.createBranchWeights(TrueCount,
                                                   CurrentCount - TrueCount);
 
@@ -1145,7 +1179,7 @@ CodeGenFunction::EmitNullInitialization(llvm::Value *DestPtr, QualType Ty) {
                                           getContext().getAsArrayType(Ty))) {
       QualType eltType;
       llvm::Value *numElts;
-      llvm::tie(numElts, eltType) = getVLASize(vlaType);
+      std::tie(numElts, eltType) = getVLASize(vlaType);
 
       SizeVal = numElts;
       CharUnits eltSize = getContext().getTypeSizeInChars(eltType);
@@ -1334,7 +1368,7 @@ CodeGenFunction::getVLASize(const VariableArrayType *type) {
       numElements = vlaSize;
     } else {
       // It's undefined behavior if this wraps around, so mark it that way.
-      // FIXME: Teach -fcatch-undefined-behavior to trap this.
+      // FIXME: Teach -fsanitize=undefined to trap this.
       numElements = Builder.CreateNUWMul(numElements, vlaSize);
     }
   } while ((type = getContext().getAsVariableArrayType(elementType)));
@@ -1538,12 +1572,10 @@ void CodeGenFunction::EmitVarAnnotations(const VarDecl *D, llvm::Value *V) {
   assert(D->hasAttr<AnnotateAttr>() && "no annotate attribute");
   // FIXME We create a new bitcast for every annotation because that's what
   // llvm-gcc was doing.
-  for (specific_attr_iterator<AnnotateAttr>
-       ai = D->specific_attr_begin<AnnotateAttr>(),
-       ae = D->specific_attr_end<AnnotateAttr>(); ai != ae; ++ai)
+  for (const auto *I : D->specific_attrs<AnnotateAttr>())
     EmitAnnotationCall(CGM.getIntrinsic(llvm::Intrinsic::var_annotation),
                        Builder.CreateBitCast(V, CGM.Int8PtrTy, V->getName()),
-                       (*ai)->getAnnotation(), D->getLocation());
+                       I->getAnnotation(), D->getLocation());
 }
 
 llvm::Value *CodeGenFunction::EmitFieldAnnotations(const FieldDecl *D,
@@ -1553,15 +1585,13 @@ llvm::Value *CodeGenFunction::EmitFieldAnnotations(const FieldDecl *D,
   llvm::Value *F = CGM.getIntrinsic(llvm::Intrinsic::ptr_annotation,
                                     CGM.Int8PtrTy);
 
-  for (specific_attr_iterator<AnnotateAttr>
-       ai = D->specific_attr_begin<AnnotateAttr>(),
-       ae = D->specific_attr_end<AnnotateAttr>(); ai != ae; ++ai) {
+  for (const auto *I : D->specific_attrs<AnnotateAttr>()) {
     // FIXME Always emit the cast inst so we can differentiate between
     // annotation on the first field of a struct and annotation on the struct
     // itself.
     if (VTy != CGM.Int8PtrTy)
       V = Builder.Insert(new llvm::BitCastInst(V, CGM.Int8PtrTy));
-    V = EmitAnnotationCall(F, V, (*ai)->getAnnotation(), D->getLocation());
+    V = EmitAnnotationCall(F, V, I->getAnnotation(), D->getLocation());
     V = Builder.CreateBitCast(V, VTy);
   }
 

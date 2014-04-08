@@ -39,7 +39,8 @@ using namespace ento;
 namespace {
 class APIMisuse : public BugType {
 public:
-  APIMisuse(const char* name) : BugType(name, "API Misuse (Apple)") {}
+  APIMisuse(const CheckerBase *checker, const char *name)
+      : BugType(checker, name, "API Misuse (Apple)") {}
 };
 } // end anonymous namespace
 
@@ -94,7 +95,7 @@ namespace {
   class NilArgChecker : public Checker<check::PreObjCMessage,
                                        check::PostStmt<ObjCDictionaryLiteral>,
                                        check::PostStmt<ObjCArrayLiteral> > {
-    mutable OwningPtr<APIMisuse> BT;
+    mutable std::unique_ptr<APIMisuse> BT;
 
     void warnIfNilExpr(const Expr *E,
                        const char *Msg,
@@ -191,7 +192,7 @@ void NilArgChecker::generateBugReport(ExplodedNode *N,
                                       const Expr *E,
                                       CheckerContext &C) const {
   if (!BT)
-    BT.reset(new APIMisuse("nil argument"));
+    BT.reset(new APIMisuse(this, "nil argument"));
 
   BugReport *R = new BugReport(*BT, Msg, N);
   R->addRange(Range);
@@ -312,7 +313,7 @@ void NilArgChecker::checkPostStmt(const ObjCDictionaryLiteral *DL,
 
 namespace {
 class CFNumberCreateChecker : public Checker< check::PreStmt<CallExpr> > {
-  mutable OwningPtr<APIMisuse> BT;
+  mutable std::unique_ptr<APIMisuse> BT;
   mutable IdentifierInfo* II;
 public:
   CFNumberCreateChecker() : II(0) {}
@@ -483,8 +484,8 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
       << " bits of the input integer will be lost.";
 
     if (!BT)
-      BT.reset(new APIMisuse("Bad use of CFNumberCreate"));
-    
+      BT.reset(new APIMisuse(this, "Bad use of CFNumberCreate"));
+
     BugReport *report = new BugReport(*BT, os.str(), N);
     report->addRange(CE->getArg(2)->getSourceRange());
     C.emitReport(report);
@@ -497,7 +498,7 @@ void CFNumberCreateChecker::checkPreStmt(const CallExpr *CE,
 
 namespace {
 class CFRetainReleaseChecker : public Checker< check::PreStmt<CallExpr> > {
-  mutable OwningPtr<APIMisuse> BT;
+  mutable std::unique_ptr<APIMisuse> BT;
   mutable IdentifierInfo *Retain, *Release, *MakeCollectable;
 public:
   CFRetainReleaseChecker(): Retain(0), Release(0), MakeCollectable(0) {}
@@ -522,8 +523,8 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
     Retain = &Ctx.Idents.get("CFRetain");
     Release = &Ctx.Idents.get("CFRelease");
     MakeCollectable = &Ctx.Idents.get("CFMakeCollectable");
-    BT.reset(
-      new APIMisuse("null passed to CFRetain/CFRelease/CFMakeCollectable"));
+    BT.reset(new APIMisuse(
+        this, "null passed to CFRetain/CFRelease/CFMakeCollectable"));
   }
 
   // Check if we called CFRetain/CFRelease/CFMakeCollectable.
@@ -551,7 +552,7 @@ void CFRetainReleaseChecker::checkPreStmt(const CallExpr *CE,
 
   // Are they equal?
   ProgramStateRef stateTrue, stateFalse;
-  llvm::tie(stateTrue, stateFalse) = state->assume(ArgIsNull);
+  std::tie(stateTrue, stateFalse) = state->assume(ArgIsNull);
 
   if (stateTrue && !stateFalse) {
     ExplodedNode *N = C.generateSink(stateTrue);
@@ -589,7 +590,7 @@ class ClassReleaseChecker : public Checker<check::PreObjCMessage> {
   mutable Selector retainS;
   mutable Selector autoreleaseS;
   mutable Selector drainS;
-  mutable OwningPtr<BugType> BT;
+  mutable std::unique_ptr<BugType> BT;
 
 public:
   void checkPreObjCMessage(const ObjCMethodCall &msg, CheckerContext &C) const;
@@ -600,9 +601,9 @@ void ClassReleaseChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
                                               CheckerContext &C) const {
   
   if (!BT) {
-    BT.reset(new APIMisuse("message incorrectly sent to class instead of class "
-                           "instance"));
-  
+    BT.reset(new APIMisuse(
+        this, "message incorrectly sent to class instead of class instance"));
+
     ASTContext &Ctx = C.getASTContext();
     releaseS = GetNullarySelector("release", Ctx);
     retainS = GetNullarySelector("retain", Ctx);
@@ -648,7 +649,7 @@ class VariadicMethodTypeChecker : public Checker<check::PreObjCMessage> {
   mutable Selector orderedSetWithObjectsS;
   mutable Selector initWithObjectsS;
   mutable Selector initWithObjectsAndKeysS;
-  mutable OwningPtr<BugType> BT;
+  mutable std::unique_ptr<BugType> BT;
 
   bool isVariadicMessage(const ObjCMethodCall &msg) const;
 
@@ -708,7 +709,8 @@ VariadicMethodTypeChecker::isVariadicMessage(const ObjCMethodCall &msg) const {
 void VariadicMethodTypeChecker::checkPreObjCMessage(const ObjCMethodCall &msg,
                                                     CheckerContext &C) const {
   if (!BT) {
-    BT.reset(new APIMisuse("Arguments passed to variadic method aren't all "
+    BT.reset(new APIMisuse(this,
+                           "Arguments passed to variadic method aren't all "
                            "Objective-C pointer types"));
 
     ASTContext &Ctx = C.getASTContext();
@@ -856,7 +858,7 @@ static ProgramStateRef checkCollectionNonNil(CheckerContext &C,
     return State;
 
   ProgramStateRef StNonNil, StNil;
-  llvm::tie(StNonNil, StNil) = State->assume(*KnownCollection);
+  std::tie(StNonNil, StNil) = State->assume(*KnownCollection);
   if (StNil && !StNonNil) {
     // The collection is nil. This path is infeasible.
     return NULL;
@@ -1139,7 +1141,10 @@ namespace {
 /// \brief The checker restricts the return values of APIs known to
 /// never (or almost never) return 'nil'.
 class ObjCNonNilReturnValueChecker
-  : public Checker<check::PostObjCMessage> {
+  : public Checker<check::PostObjCMessage,
+                   check::PostStmt<ObjCArrayLiteral>,
+                   check::PostStmt<ObjCDictionaryLiteral>,
+                   check::PostStmt<ObjCBoxedExpr> > {
     mutable bool Initialized;
     mutable Selector ObjectAtIndex;
     mutable Selector ObjectAtIndexedSubscript;
@@ -1147,13 +1152,32 @@ class ObjCNonNilReturnValueChecker
 
 public:
   ObjCNonNilReturnValueChecker() : Initialized(false) {}
+
+  ProgramStateRef assumeExprIsNonNull(const Expr *NonNullExpr,
+                                      ProgramStateRef State,
+                                      CheckerContext &C) const;
+  void assumeExprIsNonNull(const Expr *E, CheckerContext &C) const {
+    C.addTransition(assumeExprIsNonNull(E, C.getState(), C));
+  }
+
+  void checkPostStmt(const ObjCArrayLiteral *E, CheckerContext &C) const {
+    assumeExprIsNonNull(E, C);
+  }
+  void checkPostStmt(const ObjCDictionaryLiteral *E, CheckerContext &C) const {
+    assumeExprIsNonNull(E, C);
+  }
+  void checkPostStmt(const ObjCBoxedExpr *E, CheckerContext &C) const {
+    assumeExprIsNonNull(E, C);
+  }
+
   void checkPostObjCMessage(const ObjCMethodCall &M, CheckerContext &C) const;
 };
 }
 
-static ProgramStateRef assumeExprIsNonNull(const Expr *NonNullExpr,
-                                           ProgramStateRef State,
-                                           CheckerContext &C) {
+ProgramStateRef
+ObjCNonNilReturnValueChecker::assumeExprIsNonNull(const Expr *NonNullExpr,
+                                                  ProgramStateRef State,
+                                                  CheckerContext &C) const {
   SVal Val = State->getSVal(NonNullExpr, C.getLocationContext());
   if (Optional<DefinedOrUnknownSVal> DV = Val.getAs<DefinedOrUnknownSVal>())
     return State->assume(*DV, true);
@@ -1241,6 +1265,7 @@ void ento::registerObjCLoopChecker(CheckerManager &mgr) {
   mgr.registerChecker<ObjCLoopChecker>();
 }
 
-void ento::registerObjCNonNilReturnValueChecker(CheckerManager &mgr) {
+void
+ento::registerObjCNonNilReturnValueChecker(CheckerManager &mgr) {
   mgr.registerChecker<ObjCNonNilReturnValueChecker>();
 }

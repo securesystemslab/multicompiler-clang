@@ -123,7 +123,7 @@ public:
   /// \brief Sets the location of the colon.
   void setColonLoc(SourceLocation CLoc) { ColonLoc = CLoc; }
 
-  SourceRange getSourceRange() const LLVM_READONLY {
+  SourceRange getSourceRange() const override LLVM_READONLY {
     return SourceRange(getAccessSpecifierLoc(), getColonLoc());
   }
 
@@ -617,17 +617,7 @@ public:
   /// \brief Iterator that traverses the base classes of a class.
   typedef const CXXBaseSpecifier* base_class_const_iterator;
 
-  /// \brief Iterator that traverses the base classes of a class in reverse
-  /// order.
-  typedef std::reverse_iterator<base_class_iterator>
-    reverse_base_class_iterator;
-
-  /// \brief Iterator that traverses the base classes of a class in reverse
-  /// order.
-  typedef std::reverse_iterator<base_class_const_iterator>
-    reverse_base_class_const_iterator;
-
-  virtual CXXRecordDecl *getCanonicalDecl() {
+  CXXRecordDecl *getCanonicalDecl() override {
     return cast<CXXRecordDecl>(RecordDecl::getCanonicalDecl());
   }
   virtual const CXXRecordDecl *getCanonicalDecl() const {
@@ -678,27 +668,33 @@ public:
   /// \brief Retrieves the number of base classes of this class.
   unsigned getNumBases() const { return data().NumBases; }
 
+  typedef llvm::iterator_range<base_class_iterator> base_class_range;
+  typedef llvm::iterator_range<base_class_const_iterator>
+    base_class_const_range;
+
+  base_class_range bases() {
+    return base_class_range(bases_begin(), bases_end());
+  }
+  base_class_const_range bases() const {
+    return base_class_const_range(bases_begin(), bases_end());
+  }
+
   base_class_iterator bases_begin() { return data().getBases(); }
   base_class_const_iterator bases_begin() const { return data().getBases(); }
   base_class_iterator bases_end() { return bases_begin() + data().NumBases; }
   base_class_const_iterator bases_end() const {
     return bases_begin() + data().NumBases;
   }
-  reverse_base_class_iterator       bases_rbegin() {
-    return reverse_base_class_iterator(bases_end());
-  }
-  reverse_base_class_const_iterator bases_rbegin() const {
-    return reverse_base_class_const_iterator(bases_end());
-  }
-  reverse_base_class_iterator bases_rend() {
-    return reverse_base_class_iterator(bases_begin());
-  }
-  reverse_base_class_const_iterator bases_rend() const {
-    return reverse_base_class_const_iterator(bases_begin());
-  }
 
   /// \brief Retrieves the number of virtual base classes of this class.
   unsigned getNumVBases() const { return data().NumVBases; }
+
+  base_class_range vbases() {
+    return base_class_range(vbases_begin(), vbases_end());
+  }
+  base_class_const_range vbases() const {
+    return base_class_const_range(vbases_begin(), vbases_end());
+  }
 
   base_class_iterator vbases_begin() { return data().getVBases(); }
   base_class_const_iterator vbases_begin() const { return data().getVBases(); }
@@ -706,18 +702,6 @@ public:
   base_class_const_iterator vbases_end() const {
     return vbases_begin() + data().NumVBases;
   }
-  reverse_base_class_iterator vbases_rbegin() {
-    return reverse_base_class_iterator(vbases_end());
-  }
-  reverse_base_class_const_iterator vbases_rbegin() const {
-    return reverse_base_class_const_iterator(vbases_end());
-  }
-  reverse_base_class_iterator vbases_rend() {
-    return reverse_base_class_iterator(vbases_begin());
-  }
-  reverse_base_class_const_iterator vbases_rend() const {
-    return reverse_base_class_const_iterator(vbases_begin());
- }
 
   /// \brief Determine whether this class has any dependent base classes which
   /// are not the current instantiation.
@@ -727,6 +711,12 @@ public:
   /// all method members of the class, including non-instance methods,
   /// special methods, etc.
   typedef specific_decl_iterator<CXXMethodDecl> method_iterator;
+  typedef llvm::iterator_range<specific_decl_iterator<CXXMethodDecl>>
+    method_range;
+
+  method_range methods() const {
+    return method_range(method_begin(), method_end());
+  }
 
   /// \brief Method begin iterator.  Iterates in the order the methods
   /// were declared.
@@ -740,6 +730,10 @@ public:
 
   /// Iterator access to constructor members.
   typedef specific_decl_iterator<CXXConstructorDecl> ctor_iterator;
+  typedef llvm::iterator_range<specific_decl_iterator<CXXConstructorDecl>>
+    ctor_range;
+
+  ctor_range ctors() const { return ctor_range(ctor_begin(), ctor_end()); }
 
   ctor_iterator ctor_begin() const {
     return ctor_iterator(decls_begin());
@@ -751,6 +745,9 @@ public:
   /// An iterator over friend declarations.  All of these are defined
   /// in DeclFriend.h.
   class friend_iterator;
+  typedef llvm::iterator_range<friend_iterator> friend_range;
+
+  friend_range friends() const;
   friend_iterator friend_begin() const;
   friend_iterator friend_end() const;
   void pushFriendDecl(FriendDecl *FD);
@@ -1022,6 +1019,11 @@ public:
                         FieldDecl *&ThisCapture) const;
 
   typedef const LambdaExpr::Capture* capture_const_iterator;
+  typedef llvm::iterator_range<capture_const_iterator> capture_const_range;
+
+  capture_const_range captures() const {
+    return capture_const_range(captures_begin(), captures_end());
+  }
   capture_const_iterator captures_begin() const {
     return isLambda() ? getLambdaData().Captures : NULL;
   }
@@ -1546,7 +1548,7 @@ public:
   void finishedDefaultedOrDeletedMember(CXXMethodDecl *MD);
 
   /// \brief Indicates that the definition of this class is now complete.
-  virtual void completeDefinition();
+  void completeDefinition() override;
 
   /// \brief Indicates that the definition of this class is now complete,
   /// and provides a final overrider map to help determine
@@ -1600,8 +1602,24 @@ public:
 
   /// \brief Returns the inheritance model used for this record.
   MSInheritanceAttr::Spelling getMSInheritanceModel() const;
-  /// \brief Locks-in the inheritance model for this class.
-  void setMSInheritanceModel();
+  /// \brief Calculate what the inheritance model would be for this class.
+  MSInheritanceAttr::Spelling calculateInheritanceModel() const;
+
+  /// In the Microsoft C++ ABI, use zero for the field offset of a null data
+  /// member pointer if we can guarantee that zero is not a valid field offset,
+  /// or if the member pointer has multiple fields.  Polymorphic classes have a
+  /// vfptr at offset zero, so we can use zero for null.  If there are multiple
+  /// fields, we can use zero even if it is a valid field offset because
+  /// null-ness testing will check the other fields.
+  bool nullFieldOffsetIsZero() const {
+    return !MSInheritanceAttr::hasOnlyOneField(/*IsMemberFunction=*/false,
+                                               getMSInheritanceModel()) ||
+           (hasDefinition() && isPolymorphic());
+  }
+
+  /// \brief Controls when vtordisps will be emitted if this record is used as a
+  /// virtual base.
+  MSVtorDispAttr::Mode getMSVtorDispMode() const;
 
   /// \brief Determine whether this lambda expression was known to be dependent
   /// at the time it was created, even if its context does not appear to be
@@ -1638,7 +1656,7 @@ public:
 /// In the terminology of the C++ Standard, these are the (static and
 /// non-static) member functions, whether virtual or not.
 class CXXMethodDecl : public FunctionDecl {
-  virtual void anchor();
+  void anchor() override;
 protected:
   CXXMethodDecl(Kind DK, CXXRecordDecl *RD, SourceLocation StartLoc,
                 const DeclarationNameInfo &NameInfo,
@@ -1705,10 +1723,10 @@ public:
   /// \brief Determine whether this is a move assignment operator.
   bool isMoveAssignmentOperator() const;
 
-  CXXMethodDecl *getCanonicalDecl() {
+  CXXMethodDecl *getCanonicalDecl() override {
     return cast<CXXMethodDecl>(FunctionDecl::getCanonicalDecl());
   }
-  const CXXMethodDecl *getCanonicalDecl() const {
+  const CXXMethodDecl *getCanonicalDecl() const override {
     return const_cast<CXXMethodDecl*>(this)->getCanonicalDecl();
   }
 
@@ -2068,7 +2086,7 @@ public:
 /// };
 /// \endcode
 class CXXConstructorDecl : public CXXMethodDecl {
-  virtual void anchor();
+  void anchor() override;
   /// \brief Whether this constructor declaration has the \c explicit keyword
   /// specified.
   bool IsExplicitSpecified : 1;
@@ -2116,6 +2134,14 @@ public:
 
   /// \brief Iterates through the member/base initializer list.
   typedef CXXCtorInitializer * const * init_const_iterator;
+
+  typedef llvm::iterator_range<init_iterator> init_range;
+  typedef llvm::iterator_range<init_const_iterator> init_const_range;
+
+  init_range inits() { return init_range(init_begin(), init_end()); }
+  init_const_range inits() const {
+    return init_const_range(init_begin(), init_end());
+  }
 
   /// \brief Retrieve an iterator to the first initializer.
   init_iterator       init_begin()       { return CtorInitializers; }
@@ -2242,10 +2268,10 @@ public:
   /// \brief Set the constructor that this inheriting constructor is based on.
   void setInheritedConstructor(const CXXConstructorDecl *BaseCtor);
 
-  const CXXConstructorDecl *getCanonicalDecl() const {
+  const CXXConstructorDecl *getCanonicalDecl() const override {
     return cast<CXXConstructorDecl>(FunctionDecl::getCanonicalDecl());
   }
-  CXXConstructorDecl *getCanonicalDecl() {
+  CXXConstructorDecl *getCanonicalDecl() override {
     return cast<CXXConstructorDecl>(FunctionDecl::getCanonicalDecl());
   }
 
@@ -2268,7 +2294,7 @@ public:
 /// };
 /// \endcode
 class CXXDestructorDecl : public CXXMethodDecl {
-  virtual void anchor();
+  void anchor() override;
 
   FunctionDecl *OperatorDelete;
 
@@ -2291,8 +2317,12 @@ public:
                                    bool isImplicitlyDeclared);
   static CXXDestructorDecl *CreateDeserialized(ASTContext & C, unsigned ID);
 
-  void setOperatorDelete(FunctionDecl *OD) { OperatorDelete = OD; }
-  const FunctionDecl *getOperatorDelete() const { return OperatorDelete; }
+  void setOperatorDelete(FunctionDecl *OD) {
+    cast<CXXDestructorDecl>(getFirstDecl())->OperatorDelete = OD;
+  }
+  const FunctionDecl *getOperatorDelete() const {
+    return cast<CXXDestructorDecl>(getFirstDecl())->OperatorDelete;
+  }
 
   // Implement isa/cast/dyncast/etc.
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
@@ -2313,7 +2343,7 @@ public:
 /// };
 /// \endcode
 class CXXConversionDecl : public CXXMethodDecl {
-  virtual void anchor();
+  void anchor() override;
   /// Whether this conversion function declaration is marked
   /// "explicit", meaning that it can only be applied when the user
   /// explicitly wrote a cast. This is a C++0x feature.
@@ -2442,7 +2472,7 @@ public:
     return decls_empty() ? getLocation() : decls_begin()->getLocEnd();
   }
 
-  SourceRange getSourceRange() const LLVM_READONLY {
+  SourceRange getSourceRange() const override LLVM_READONLY {
     return SourceRange(ExternLoc, getLocEnd());
   }
 
@@ -2467,7 +2497,7 @@ public:
 /// artificial names for all using-directives in order to store
 /// them in DeclContext effectively.
 class UsingDirectiveDecl : public NamedDecl {
-  virtual void anchor();
+  void anchor() override;
   /// \brief The location of the \c using keyword.
   SourceLocation UsingLoc;
 
@@ -2548,8 +2578,8 @@ public:
                                     NamedDecl *Nominated,
                                     DeclContext *CommonAncestor);
   static UsingDirectiveDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  SourceRange getSourceRange() const LLVM_READONLY {
+
+  SourceRange getSourceRange() const override LLVM_READONLY {
     return SourceRange(UsingLoc, getLocation());
   }
 
@@ -2570,7 +2600,7 @@ public:
 /// namespace Foo = Bar;
 /// \endcode
 class NamespaceAliasDecl : public NamedDecl {
-  virtual void anchor();
+  void anchor() override;
 
   /// \brief The location of the \c namespace keyword.
   SourceLocation NamespaceLoc;
@@ -2643,8 +2673,8 @@ public:
                                     NamedDecl *Namespace);
 
   static NamespaceAliasDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-  
-  virtual SourceRange getSourceRange() const LLVM_READONLY {
+
+  SourceRange getSourceRange() const override LLVM_READONLY {
     return SourceRange(NamespaceLoc, IdentLoc);
   }
 
@@ -2666,7 +2696,7 @@ public:
 /// }
 /// \endcode
 class UsingShadowDecl : public NamedDecl, public Redeclarable<UsingShadowDecl> {
-  virtual void anchor();
+  void anchor() override;
 
   /// The referenced declaration.
   NamedDecl *Underlying;
@@ -2689,13 +2719,13 @@ class UsingShadowDecl : public NamedDecl, public Redeclarable<UsingShadowDecl> {
   }
 
   typedef Redeclarable<UsingShadowDecl> redeclarable_base;
-  virtual UsingShadowDecl *getNextRedeclaration() {
+  UsingShadowDecl *getNextRedeclaration() override {
     return RedeclLink.getNext();
   }
-  virtual UsingShadowDecl *getPreviousDeclImpl() {
+  UsingShadowDecl *getPreviousDeclImpl() override {
     return getPreviousDecl();
   }
-  virtual UsingShadowDecl *getMostRecentDeclImpl() {
+  UsingShadowDecl *getMostRecentDeclImpl() override {
     return getMostRecentDecl();
   }
 
@@ -2708,16 +2738,18 @@ public:
 
   static UsingShadowDecl *CreateDeserialized(ASTContext &C, unsigned ID);
 
+  typedef redeclarable_base::redecl_range redecl_range;
   typedef redeclarable_base::redecl_iterator redecl_iterator;
   using redeclarable_base::redecls_begin;
   using redeclarable_base::redecls_end;
+  using redeclarable_base::redecls;
   using redeclarable_base::getPreviousDecl;
   using redeclarable_base::getMostRecentDecl;
 
-  virtual UsingShadowDecl *getCanonicalDecl() {
+  UsingShadowDecl *getCanonicalDecl() override {
     return getFirstDecl();
   }
-  virtual const UsingShadowDecl *getCanonicalDecl() const {
+  const UsingShadowDecl *getCanonicalDecl() const {
     return getFirstDecl();
   }
 
@@ -2756,7 +2788,7 @@ public:
 ///    using someNameSpace::someIdentifier;
 /// \endcode
 class UsingDecl : public NamedDecl {
-  virtual void anchor();
+  void anchor() override;
 
   /// \brief The source location of the 'using' keyword itself.
   SourceLocation UsingLocation;
@@ -2850,6 +2882,11 @@ public:
     }
   };
 
+  typedef llvm::iterator_range<shadow_iterator> shadow_range;
+
+  shadow_range shadows() const {
+    return shadow_range(shadow_begin(), shadow_end());
+  }
   shadow_iterator shadow_begin() const {
     return shadow_iterator(FirstUsingShadow.getPointer());
   }
@@ -2872,7 +2909,7 @@ public:
 
   static UsingDecl *CreateDeserialized(ASTContext &C, unsigned ID);
 
-  SourceRange getSourceRange() const LLVM_READONLY;
+  SourceRange getSourceRange() const override LLVM_READONLY;
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == Using; }
@@ -2893,7 +2930,7 @@ public:
 /// };
 /// \endcode
 class UnresolvedUsingValueDecl : public ValueDecl {
-  virtual void anchor();
+  void anchor() override;
 
   /// \brief The source location of the 'using' keyword
   SourceLocation UsingLocation;
@@ -2946,7 +2983,7 @@ public:
   static UnresolvedUsingValueDecl *
   CreateDeserialized(ASTContext &C, unsigned ID);
 
-  SourceRange getSourceRange() const LLVM_READONLY;
+  SourceRange getSourceRange() const override LLVM_READONLY;
 
   static bool classof(const Decl *D) { return classofKind(D->getKind()); }
   static bool classofKind(Kind K) { return K == UnresolvedUsingValue; }
@@ -2967,7 +3004,7 @@ public:
 /// The type associated with an unresolved using typename decl is
 /// currently always a typename type.
 class UnresolvedUsingTypenameDecl : public TypeDecl {
-  virtual void anchor();
+  void anchor() override;
 
   /// \brief The source location of the 'typename' keyword
   SourceLocation TypenameLocation;
@@ -3045,7 +3082,7 @@ public:
 
   SourceLocation getRParenLoc() const { return RParenLoc; }
 
-  SourceRange getSourceRange() const LLVM_READONLY {
+  SourceRange getSourceRange() const override LLVM_READONLY {
     return SourceRange(getLocation(), getRParenLoc());
   }
 

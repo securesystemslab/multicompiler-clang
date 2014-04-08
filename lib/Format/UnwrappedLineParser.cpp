@@ -74,7 +74,7 @@ public:
     StructuralError = PreviousStructuralError;
   }
 
-  virtual FormatToken *getNextToken() {
+  FormatToken *getNextToken() override {
     // The \c UnwrappedLineParser guards against this by never calling
     // \c getNextToken() after it has encountered the first eof token.
     assert(!eof());
@@ -84,9 +84,9 @@ public:
     return Token;
   }
 
-  virtual unsigned getPosition() { return PreviousTokenSource->getPosition(); }
+  unsigned getPosition() override { return PreviousTokenSource->getPosition(); }
 
-  virtual FormatToken *setPosition(unsigned Position) {
+  FormatToken *setPosition(unsigned Position) override {
     Token = PreviousTokenSource->setPosition(Position);
     return Token;
   }
@@ -128,7 +128,7 @@ public:
       Parser.CurrentLines = &Parser.PreprocessorDirectives;
     else if (!Parser.Line->Tokens.empty())
       Parser.CurrentLines = &Parser.Line->Tokens.back().Children;
-    PreBlockLine = Parser.Line.take();
+    PreBlockLine = Parser.Line.release();
     Parser.Line.reset(new UnwrappedLine());
     Parser.Line->Level = PreBlockLine->Level;
     Parser.Line->InPPDirective = PreBlockLine->InPPDirective;
@@ -180,17 +180,17 @@ public:
   IndexedTokenSource(ArrayRef<FormatToken *> Tokens)
       : Tokens(Tokens), Position(-1) {}
 
-  virtual FormatToken *getNextToken() {
+  FormatToken *getNextToken() override {
     ++Position;
     return Tokens[Position];
   }
 
-  virtual unsigned getPosition() {
+  unsigned getPosition() override {
     assert(Position >= 0);
     return Position;
   }
 
-  virtual FormatToken *setPosition(unsigned P) {
+  FormatToken *setPosition(unsigned P) override {
     Position = P;
     return Tokens[Position];
   }
@@ -357,6 +357,7 @@ void UnwrappedLineParser::calculateBraceTypes() {
         LBraceStack.pop_back();
       }
       break;
+    case tok::at:
     case tok::semi:
     case tok::kw_if:
     case tok::kw_while:
@@ -509,7 +510,9 @@ void UnwrappedLineParser::parsePPEndIf() {
       PPLevelBranchCount[PPBranchLevel] = PPChainBranchIndex.top() + 1;
     }
   }
-  --PPBranchLevel;
+  // Guard against #endif's without #if.
+  if (PPBranchLevel > 0)
+    --PPBranchLevel;
   if (!PPChainBranchIndex.empty())
     PPChainBranchIndex.pop();
   if (!PPStack.empty())
@@ -651,6 +654,12 @@ void UnwrappedLineParser::parseStructuralElement() {
         return;
       }
     }
+    break;
+  case tok::identifier:
+    if (FormatTok->IsForEachMacro) {
+      parseForOrWhileLoop();
+      return;
+    }
     // In all other cases, parse the declaration.
     break;
   default:
@@ -665,6 +674,12 @@ void UnwrappedLineParser::parseStructuralElement() {
       break;
     case tok::kw_enum:
       parseEnum();
+      break;
+    case tok::kw_typedef:
+      nextToken();
+      // FIXME: Use the IdentifierTable instead.
+      if (FormatTok->TokenText == "NS_ENUM")
+        parseEnum();
       break;
     case tok::kw_struct:
     case tok::kw_union:
@@ -685,9 +700,13 @@ void UnwrappedLineParser::parseStructuralElement() {
       break;
     case tok::caret:
       nextToken();
-      if (FormatTok->is(tok::l_brace)) {
+      if (FormatTok->Tok.isAnyIdentifier() ||
+          FormatTok->isSimpleTypeSpecifier())
+        nextToken();
+      if (FormatTok->is(tok::l_paren))
+        parseParens();
+      if (FormatTok->is(tok::l_brace))
         parseChildBlock();
-      }
       break;
     case tok::l_brace:
       if (!tryToParseBracedList()) {
@@ -717,7 +736,7 @@ void UnwrappedLineParser::parseStructuralElement() {
         if (FormatTok->Tok.is(tok::l_paren)) {
           parseParens();
           if (FormatTok->NewlinesBefore > 0 &&
-              tokenCanStartNewLine(FormatTok->Tok)) {
+              tokenCanStartNewLine(FormatTok->Tok) && Text == Text.upper()) {
             addUnwrappedLine();
             return;
           }
@@ -751,6 +770,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
   // solution.
   if (!Line->Tokens.empty() &&
       (Line->Tokens.back().Tok->isOneOf(tok::identifier, tok::kw_operator) ||
+       Line->Tokens.back().Tok->closesScope() ||
        Line->Tokens.back().Tok->isSimpleTypeSpecifier())) {
     nextToken();
     return false;
@@ -760,7 +780,7 @@ bool UnwrappedLineParser::tryToParseLambda() {
   if (!tryToParseLambdaIntroducer())
     return false;
 
-  while (FormatTok && FormatTok->isNot(tok::l_brace)) {
+  while (FormatTok->isNot(tok::l_brace)) {
     if (FormatTok->isSimpleTypeSpecifier()) {
       nextToken();
       continue;
@@ -774,8 +794,12 @@ bool UnwrappedLineParser::tryToParseLambda() {
     case tok::less:
     case tok::greater:
     case tok::identifier:
+    case tok::coloncolon:
     case tok::kw_mutable:
+      nextToken();
+      break;
     case tok::arrow:
+      FormatTok->Type = TT_TrailingReturnArrow;
       nextToken();
       break;
     default:
@@ -1023,8 +1047,9 @@ void UnwrappedLineParser::parseNamespace() {
 }
 
 void UnwrappedLineParser::parseForOrWhileLoop() {
-  assert((FormatTok->Tok.is(tok::kw_for) || FormatTok->Tok.is(tok::kw_while)) &&
-         "'for' or 'while' expected");
+  assert((FormatTok->Tok.is(tok::kw_for) || FormatTok->Tok.is(tok::kw_while) ||
+          FormatTok->IsForEachMacro) &&
+         "'for', 'while' or foreach macro expected");
   nextToken();
   if (FormatTok->Tok.is(tok::l_paren))
     parseParens();
@@ -1127,7 +1152,10 @@ void UnwrappedLineParser::parseAccessSpecifier() {
 }
 
 void UnwrappedLineParser::parseEnum() {
-  nextToken();
+  if (FormatTok->Tok.is(tok::kw_enum)) {
+    // Won't be 'enum' for NS_ENUMs.
+    nextToken();
+  }
   // Eat up enum class ...
   if (FormatTok->Tok.is(tok::kw_class) ||
       FormatTok->Tok.is(tok::kw_struct))
@@ -1198,7 +1226,7 @@ void UnwrappedLineParser::parseRecord() {
         Style.BreakBeforeBraces == FormatStyle::BS_GNU)
       addUnwrappedLine();
 
-    parseBlock(/*MustBeDeclaration=*/true, /*Addlevel=*/true,
+    parseBlock(/*MustBeDeclaration=*/true, /*AddLevel=*/true,
                /*MunchSemi=*/false);
   }
   // We fall through to parsing a structural element afterwards, so
@@ -1352,6 +1380,7 @@ void UnwrappedLineParser::readToken() {
   bool CommentsInCurrentLine = true;
   do {
     FormatTok = Tokens->getNextToken();
+    assert(FormatTok);
     while (!Line->InPPDirective && FormatTok->Tok.is(tok::hash) &&
            (FormatTok->HasUnescapedNewline || FormatTok->IsFirst)) {
       // If there is an unfinished unwrapped line, we flush the preprocessor

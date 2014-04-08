@@ -56,8 +56,8 @@ struct AT3 : AT2, AT1 {
 // CHECK-NEXT:    0 | struct AT3
 // CHECK-NEXT:    0 |   struct AT2 (base)
 // CHECK-NEXT:    0 |     struct AT0 t
-// CHECK-NEXT:    0 |       union AT0::<anonymous at {{.*}} x
-// CHECK-NEXT:    0 |         struct AT0::<anonymous at {{.*}} y
+// CHECK-NEXT:    0 |       union AT0::(anonymous at {{.*}} x
+// CHECK-NEXT:    0 |         struct AT0::(anonymous at {{.*}} y
 // CHECK-NEXT:    0 |           int a
 // CHECK-NEXT:    4 |           struct AT t (empty)
 // CHECK:         0 |         int b
@@ -81,8 +81,8 @@ struct AT3 : AT2, AT1 {
 // CHECK-X64-NEXT:    0 | struct AT3
 // CHECK-X64-NEXT:    0 |   struct AT2 (base)
 // CHECK-X64-NEXT:    0 |     struct AT0 t
-// CHECK-X64-NEXT:    0 |       union AT0::<anonymous at {{.*}} x
-// CHECK-X64-NEXT:    0 |         struct AT0::<anonymous at {{.*}} y
+// CHECK-X64-NEXT:    0 |       union AT0::(anonymous at {{.*}} x
+// CHECK-X64-NEXT:    0 |         struct AT0::(anonymous at {{.*}} y
 // CHECK-X64-NEXT:    0 |           int a
 // CHECK-X64-NEXT:    4 |           struct AT t (empty)
 // CHECK-X64:         0 |         int b
@@ -283,20 +283,20 @@ struct JC4 : JC1, JC2 {
 // CHECK-NEXT:   12 |       struct JC0 (base) (empty)
 // CHECK-NEXT:      | [sizeof=12, align=4
 // CHECK-NEXT:      |  nvsize=12, nvalign=4]
-// CHECK-x64: *** Dumping AST Record Layout
-// CHECK-x64: *** Dumping AST Record Layout
-// CHECK-x64: *** Dumping AST Record Layout
-// CHECK-x64: *** Dumping AST Record Layout
-// CHECK-x64-NEXT:    0 | struct JC4
-// CHECK-x64-NEXT:    0 |   struct JC1 (primary base)
-// CHECK-x64-NEXT:    0 |     (JC1 vftable pointer)
-// CHECK-x64-NEXT:    8 |     struct JC0 (base) (empty)
-// CHECK-x64-NEXT:   16 |   struct JC2 (base)
-// CHECK-x64-NEXT:   16 |     struct JC1 (primary base)
-// CHECK-x64-NEXT:   16 |       (JC1 vftable pointer)
-// CHECK-x64-NEXT:   24 |       struct JC0 (base) (empty)
-// CHECK-x64-NEXT:      | [sizeof=24, align=8
-// CHECK-x64-NEXT:      |  nvsize=24, nvalign=8]
+// CHECK-X64: *** Dumping AST Record Layout
+// CHECK-X64: *** Dumping AST Record Layout
+// CHECK-X64: *** Dumping AST Record Layout
+// CHECK-X64: *** Dumping AST Record Layout
+// CHECK-X64-NEXT:    0 | struct JC4
+// CHECK-X64-NEXT:    0 |   struct JC1 (primary base)
+// CHECK-X64-NEXT:    0 |     (JC1 vftable pointer)
+// CHECK-X64-NEXT:    8 |     struct JC0 (base) (empty)
+// CHECK-X64-NEXT:   16 |   struct JC2 (base)
+// CHECK-X64-NEXT:   16 |     struct JC1 (primary base)
+// CHECK-X64-NEXT:   16 |       (JC1 vftable pointer)
+// CHECK-X64-NEXT:   24 |       struct JC0 (base) (empty)
+// CHECK-X64-NEXT:      | [sizeof=24, align=8
+// CHECK-X64-NEXT:      |  nvsize=24, nvalign=8]
 
 int a[
 sizeof(AT3) +

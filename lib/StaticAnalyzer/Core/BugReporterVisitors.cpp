@@ -115,7 +115,7 @@ BugReporterVisitor::getDefaultEndPath(BugReporterContext &BRC,
     PathDiagnosticLocation::createEndOfPath(EndPathNode,BRC.getSourceManager());
 
   BugReport::ranges_iterator Beg, End;
-  llvm::tie(Beg, End) = BR.getRanges();
+  std::tie(Beg, End) = BR.getRanges();
 
   // Only add the statement itself as a range if we didn't specify any
   // special ranges for this report.
@@ -156,7 +156,7 @@ public:
     return static_cast<void *>(&Tag);
   }
 
-  virtual void Profile(llvm::FoldingSetNodeID &ID) const {
+  void Profile(llvm::FoldingSetNodeID &ID) const override {
     ID.AddPointer(ReturnVisitor::getTag());
     ID.AddPointer(StackFrame);
     ID.AddBoolean(EnableNullFPSuppression);
@@ -386,7 +386,7 @@ public:
   PathDiagnosticPiece *VisitNode(const ExplodedNode *N,
                                  const ExplodedNode *PrevN,
                                  BugReporterContext &BRC,
-                                 BugReport &BR) {
+                                 BugReport &BR) override {
     switch (Mode) {
     case Initial:
       return visitNodeInitial(N, PrevN, BRC, BR);
@@ -401,7 +401,7 @@ public:
 
   PathDiagnosticPiece *getEndPath(BugReporterContext &BRC,
                                   const ExplodedNode *N,
-                                  BugReport &BR) {
+                                  BugReport &BR) override {
     if (EnableNullFPSuppression)
       BR.markInvalid(ReturnVisitor::getTag(), StackFrame);
     return 0;
@@ -1558,25 +1558,18 @@ LikelyFalsePositiveSuppressionBRVisitor::getEndPath(BugReporterContext &BRC,
       //   std::u16string s; s += u'a';
       // because we cannot reason about the internal invariants of the
       // datastructure.
-      const LocationContext *LCtx = N->getLocationContext();
-      do {
+      for (const LocationContext *LCtx = N->getLocationContext(); LCtx;
+           LCtx = LCtx->getParent()) {
         const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(LCtx->getDecl());
         if (!MD)
-          break;
+          continue;
 
         const CXXRecordDecl *CD = MD->getParent();
         if (CD->getName() == "basic_string") {
           BR.markInvalid(getTag(), 0);
           return 0;
-        } else if (CD->getName().find("allocator") == StringRef::npos) {
-          // Only keep searching if the current method is in a class with the
-          // word "allocator" in its name, e.g. std::allocator or
-          // allocator_traits.
-          break;
         }
-
-        LCtx = LCtx->getParent();
-      } while (LCtx);
+      }
     }
   }
 

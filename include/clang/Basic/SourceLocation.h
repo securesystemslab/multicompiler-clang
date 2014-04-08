@@ -89,7 +89,7 @@ class SourceLocation {
   friend class SourceManager;
   friend class ASTReader;
   friend class ASTWriter;
-  enum LLVM_ENUM_INT_TYPE(unsigned) {
+  enum : unsigned {
     MacroIDBit = 1U << 31
   };
 public:
@@ -188,7 +188,7 @@ inline bool operator<(const SourceLocation &LHS, const SourceLocation &RHS) {
   return LHS.getRawEncoding() < RHS.getRawEncoding();
 }
 
-/// \brief A trival tuple used to represent a source range.
+/// \brief A trivial tuple used to represent a source range.
 class SourceRange {
   SourceLocation B;
   SourceLocation E;

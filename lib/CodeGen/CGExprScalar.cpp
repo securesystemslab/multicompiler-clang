@@ -22,13 +22,13 @@
 #include "clang/AST/StmtVisitor.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Frontend/CodeGenOptions.h"
+#include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Support/CFG.h"
 #include <cstdarg>
 
 using namespace clang;
@@ -1298,7 +1298,7 @@ Value *ScalarExprEmitter::VisitCastExpr(CastExpr *CE) {
     Value *Src = Visit(const_cast<Expr*>(E));
     llvm::Type *SrcTy = Src->getType();
     llvm::Type *DstTy = ConvertType(DestTy);
-    if (SrcTy->isPtrOrPtrVectorTy() && DstTy->isPtrOrPtrVectorTy() && 
+    if (SrcTy->isPtrOrPtrVectorTy() && DstTy->isPtrOrPtrVectorTy() &&
         SrcTy->getPointerAddressSpace() != DstTy->getPointerAddressSpace()) {
       llvm::Type *MidTy = CGF.CGM.getDataLayout().getIntPtrType(SrcTy);
       return Builder.CreateIntToPtr(Builder.CreatePtrToInt(Src, MidTy), DstTy);
@@ -1735,8 +1735,9 @@ ScalarExprEmitter::EmitScalarPrePostIncDec(const UnaryOperator *E, LValue LV,
   if (atomicPHI) {
     llvm::BasicBlock *opBB = Builder.GetInsertBlock();
     llvm::BasicBlock *contBB = CGF.createBasicBlock("atomic_cont", CGF.CurFn);
-    llvm::Value *old = Builder.CreateAtomicCmpXchg(LV.getAddress(), atomicPHI,
-        CGF.EmitToMemory(value, type), llvm::SequentiallyConsistent);
+    llvm::Value *old = Builder.CreateAtomicCmpXchg(
+        LV.getAddress(), atomicPHI, CGF.EmitToMemory(value, type),
+        llvm::SequentiallyConsistent, llvm::SequentiallyConsistent);
     atomicPHI->addIncoming(old, opBB);
     llvm::Value *success = Builder.CreateICmpEQ(old, atomicPHI);
     Builder.CreateCondBr(success, contBB, opBB);
@@ -1914,7 +1915,7 @@ ScalarExprEmitter::VisitUnaryExprOrTypeTraitExpr(
 
       QualType eltType;
       llvm::Value *numElts;
-      llvm::tie(numElts, eltType) = CGF.getVLASize(VAT);
+      std::tie(numElts, eltType) = CGF.getVLASize(VAT);
 
       llvm::Value *size = numElts;
 
@@ -2077,8 +2078,9 @@ LValue ScalarExprEmitter::EmitCompoundAssignLValue(
   if (atomicPHI) {
     llvm::BasicBlock *opBB = Builder.GetInsertBlock();
     llvm::BasicBlock *contBB = CGF.createBasicBlock("atomic_cont", CGF.CurFn);
-    llvm::Value *old = Builder.CreateAtomicCmpXchg(LHSLV.getAddress(), atomicPHI,
-        CGF.EmitToMemory(Result, LHSTy), llvm::SequentiallyConsistent);
+    llvm::Value *old = Builder.CreateAtomicCmpXchg(
+        LHSLV.getAddress(), atomicPHI, CGF.EmitToMemory(Result, LHSTy),
+        llvm::SequentiallyConsistent, llvm::SequentiallyConsistent);
     atomicPHI->addIncoming(old, opBB);
     llvm::Value *success = Builder.CreateICmpEQ(old, atomicPHI);
     Builder.CreateCondBr(success, contBB, opBB);
@@ -2246,7 +2248,7 @@ Value *ScalarExprEmitter::EmitOverflowCheckedBinOp(const BinOpInfo &Ops) {
   llvm::BasicBlock *initialBB = Builder.GetInsertBlock();
   llvm::Function::iterator insertPt = initialBB;
   llvm::BasicBlock *continueBB = CGF.createBasicBlock("nooverflow", CGF.CurFn,
-                                                      llvm::next(insertPt));
+                                                      std::next(insertPt));
   llvm::BasicBlock *overflowBB = CGF.createBasicBlock("overflow", CGF.CurFn);
 
   Builder.CreateCondBr(overflow, overflowBB, continueBB);
@@ -2537,7 +2539,7 @@ Value *ScalarExprEmitter::EmitSub(const BinOpInfo &op) {
   if (const VariableArrayType *vla
         = CGF.getContext().getAsVariableArrayType(elementType)) {
     llvm::Value *numElements;
-    llvm::tie(numElements, elementType) = CGF.getVLASize(vla);
+    std::tie(numElements, elementType) = CGF.getVLASize(vla);
 
     divisor = numElements;
 
@@ -2826,11 +2828,11 @@ Value *ScalarExprEmitter::VisitBinAssign(const BinaryOperator *E) {
 
   switch (E->getLHS()->getType().getObjCLifetime()) {
   case Qualifiers::OCL_Strong:
-    llvm::tie(LHS, RHS) = CGF.EmitARCStoreStrong(E, Ignore);
+    std::tie(LHS, RHS) = CGF.EmitARCStoreStrong(E, Ignore);
     break;
 
   case Qualifiers::OCL_Autoreleasing:
-    llvm::tie(LHS,RHS) = CGF.EmitARCStoreAutoreleasing(E);
+    std::tie(LHS, RHS) = CGF.EmitARCStoreAutoreleasing(E);
     break;
 
   case Qualifiers::OCL_Weak:
@@ -2934,7 +2936,6 @@ Value *ScalarExprEmitter::VisitBinLAnd(const BinaryOperator *E) {
   CGF.EmitBlock(RHSBlock);
   Cnt.beginRegion(Builder);
   Value *RHSCond = CGF.EvaluateExprAsBool(E->getRHS());
-  Cnt.adjustForControlFlow();
   eval.end(CGF);
 
   // Reaquire the RHS block, as there may be subblocks inserted.
@@ -2947,7 +2948,6 @@ Value *ScalarExprEmitter::VisitBinLAnd(const BinaryOperator *E) {
     Builder.SetCurrentDebugLocation(llvm::DebugLoc());
   CGF.EmitBlock(ContBlock);
   PN->addIncoming(RHSCond, RHSBlock);
-  Cnt.applyAdjustmentsToRegion();
 
   // ZExt result to int.
   return Builder.CreateZExtOrBitCast(PN, ResTy, "land.ext");
@@ -3017,7 +3017,6 @@ Value *ScalarExprEmitter::VisitBinLOr(const BinaryOperator *E) {
   CGF.EmitBlock(RHSBlock);
   Cnt.beginRegion(Builder);
   Value *RHSCond = CGF.EvaluateExprAsBool(E->getRHS());
-  Cnt.adjustForControlFlow();
 
   eval.end(CGF);
 
@@ -3028,7 +3027,6 @@ Value *ScalarExprEmitter::VisitBinLOr(const BinaryOperator *E) {
   // into the phi node for the edge with the value of RHSCond.
   CGF.EmitBlock(ContBlock);
   PN->addIncoming(RHSCond, RHSBlock);
-  Cnt.applyAdjustmentsToRegion();
 
   // ZExt result to int.
   return Builder.CreateZExtOrBitCast(PN, ResTy, "lor.ext");
@@ -3171,21 +3169,17 @@ VisitAbstractConditionalOperator(const AbstractConditionalOperator *E) {
   eval.begin(CGF);
   Value *LHS = Visit(lhsExpr);
   eval.end(CGF);
-  Cnt.adjustForControlFlow();
 
   LHSBlock = Builder.GetInsertBlock();
   Builder.CreateBr(ContBlock);
 
   CGF.EmitBlock(RHSBlock);
-  Cnt.beginElseRegion();
   eval.begin(CGF);
   Value *RHS = Visit(rhsExpr);
   eval.end(CGF);
-  Cnt.adjustForControlFlow();
 
   RHSBlock = Builder.GetInsertBlock();
   CGF.EmitBlock(ContBlock);
-  Cnt.applyAdjustmentsToRegion();
 
   // If the LHS or RHS is a throw expression, it will be legitimately null.
   if (!LHS)

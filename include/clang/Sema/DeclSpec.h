@@ -709,21 +709,11 @@ public:
   void addAttributes(AttributeList *AL) {
     Attrs.addAll(AL);
   }
-  void setAttributes(AttributeList *AL) {
-    Attrs.set(AL);
-  }
 
   bool hasAttributes() const { return !Attrs.empty(); }
 
   ParsedAttributes &getAttributes() { return Attrs; }
   const ParsedAttributes &getAttributes() const { return Attrs; }
-
-  /// \brief Return the current attribute list and remove them from
-  /// the DeclSpec so that it doesn't own them.
-  ParsedAttributes takeAttributes() {
-    // The non-const "copy" constructor clears the operand automatically.
-    return Attrs;
-  }
 
   void takeAttributesFrom(ParsedAttributes &attrs) {
     Attrs.takeAllFrom(attrs);
@@ -831,8 +821,8 @@ private:
 
   // NOTE: VC++ treats enums as signed, avoid using ObjCPropertyAttributeKind
   unsigned PropertyAttributes : 12;
-  IdentifierInfo *GetterName;    // getter name of NULL if no getter
-  IdentifierInfo *SetterName;    // setter name of NULL if no setter
+  IdentifierInfo *GetterName;    // getter name or NULL if no getter
+  IdentifierInfo *SetterName;    // setter name or NULL if no setter
 };
 
 /// \brief Represents a C++ unqualified-id that has been parsed. 
@@ -1115,7 +1105,8 @@ struct DeclaratorChunk {
   };
 
   /// ParamInfo - An array of paraminfo objects is allocated whenever a function
-  /// declarator is parsed.  There are two interesting styles of arguments here:
+  /// declarator is parsed.  There are two interesting styles of parameters
+  /// here:
   /// K&R-style identifier lists and parameter type lists.  K&R-style identifier
   /// lists will have information about the identifier, but no type information.
   /// Parameter type lists will have type info (if the actions module provides
@@ -1147,7 +1138,7 @@ struct DeclaratorChunk {
 
   struct FunctionTypeInfo : TypeInfoCommon {
     /// hasPrototype - This is true if the function had at least one typed
-    /// argument.  If the function is () or (a,b,c), then it has no prototype,
+    /// parameter.  If the function is () or (a,b,c), then it has no prototype,
     /// and is treated as a K&R-style function.
     unsigned hasPrototype : 1;
 
@@ -1170,8 +1161,8 @@ struct DeclaratorChunk {
     /// ExceptionSpecType - An ExceptionSpecificationType value.
     unsigned ExceptionSpecType : 3;
 
-    /// DeleteArgInfo - If this is true, we need to delete[] ArgInfo.
-    unsigned DeleteArgInfo : 1;
+    /// DeleteParams - If this is true, we need to delete[] Params.
+    unsigned DeleteParams : 1;
 
     /// HasTrailingReturnType - If this is true, a trailing return type was
     /// specified.
@@ -1186,9 +1177,9 @@ struct DeclaratorChunk {
     /// The location of the right parenthesis in the source.
     unsigned RParenLoc;
 
-    /// NumArgs - This is the number of formal arguments provided for the
+    /// NumParams - This is the number of formal parameters specified by the
     /// declarator.
-    unsigned NumArgs;
+    unsigned NumParams;
 
     /// NumExceptions - This is the number of types in the dynamic-exception-
     /// decl, if the function has one.
@@ -1216,10 +1207,10 @@ struct DeclaratorChunk {
     /// \brief The location of the keyword introducing the spec, if any.
     unsigned ExceptionSpecLoc;
 
-    /// ArgInfo - This is a pointer to a new[]'d array of ParamInfo objects that
-    /// describe the arguments for this function declarator.  This is null if
-    /// there are no arguments specified.
-    ParamInfo *ArgInfo;
+    /// Params - This is a pointer to a new[]'d array of ParamInfo objects that
+    /// describe the parameters specified by this function declarator.  null if
+    /// there are no parameters specified.
+    ParamInfo *Params;
 
     union {
       /// \brief Pointer to a new[]'d array of TypeAndRange objects that
@@ -1236,30 +1227,28 @@ struct DeclaratorChunk {
     /// type specified.
     UnionParsedType TrailingReturnType;
 
-    /// \brief Reset the argument list to having zero arguments.
+    /// \brief Reset the parameter list to having zero parameters.
     ///
     /// This is used in various places for error recovery.
-    void freeArgs() {
-      if (DeleteArgInfo) {
-        delete[] ArgInfo;
-        DeleteArgInfo = false;
+    void freeParams() {
+      if (DeleteParams) {
+        delete[] Params;
+        DeleteParams = false;
       }
-      NumArgs = 0;
+      NumParams = 0;
     }
 
     void destroy() {
-      if (DeleteArgInfo)
-        delete[] ArgInfo;
+      if (DeleteParams)
+        delete[] Params;
       if (getExceptionSpecType() == EST_Dynamic)
         delete[] Exceptions;
     }
 
     /// isKNRPrototype - Return true if this is a K&R style identifier list,
     /// like "void foo(a,b,c)".  In a function definition, this will be followed
-    /// by the argument type definitions.
-    bool isKNRPrototype() const {
-      return !hasPrototype && NumArgs != 0;
-    }
+    /// by the parameter type definitions.
+    bool isKNRPrototype() const { return !hasPrototype && NumParams != 0; }
 
     SourceLocation getLParenLoc() const {
       return SourceLocation::getFromRawEncoding(LParenLoc);
@@ -1428,7 +1417,7 @@ struct DeclaratorChunk {
   static DeclaratorChunk getFunction(bool hasProto,
                                      bool isAmbiguous,
                                      SourceLocation LParenLoc,
-                                     ParamInfo *ArgInfo, unsigned NumArgs,
+                                     ParamInfo *Params, unsigned NumParams,
                                      SourceLocation EllipsisLoc,
                                      SourceLocation RParenLoc,
                                      unsigned TypeQuals,

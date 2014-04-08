@@ -58,6 +58,9 @@ struct FormatStyle {
   /// \brief The maximum number of consecutive empty lines to keep.
   unsigned MaxEmptyLinesToKeep;
 
+  /// \brief If true, empty lines at the start of blocks are kept.
+  bool KeepEmptyLinesAtTheStartOfBlocks;
+
   /// \brief The penalty for each line break introduced inside a comment.
   unsigned PenaltyBreakComment;
 
@@ -76,7 +79,8 @@ struct FormatStyle {
   /// \brief Set whether & and * bind to the type as opposed to the variable.
   bool PointerBindsToType;
 
-  /// \brief If \c true, analyze the formatted file for the most common binding.
+  /// \brief If \c true, analyze the formatted file for the most common binding
+  /// and use \c PointerBindsToType only as fallback.
   bool DerivePointerBinding;
 
   /// \brief The extra indent or outdent of access modifiers, e.g. \c public:.
@@ -162,6 +166,10 @@ struct FormatStyle {
   /// \brief If \c true, <tt>int f() { return 0; }</tt> can be put on a single
   /// line.
   bool AllowShortFunctionsOnASingleLine;
+
+  /// \brief Add a space after \c @property in Objective-C, i.e. use
+  /// <tt>@property (readonly)</tt> instead of <tt>@property(readonly)</tt>.
+  bool ObjCSpaceAfterProperty;
 
   /// \brief Add a space in front of an Objective-C protocol list, i.e. use
   /// <tt>Foo <Protocol></tt> instead of \c Foo<Protocol>.
@@ -294,6 +302,18 @@ struct FormatStyle {
   /// which should not be split into lines or otherwise changed.
   std::string CommentPragmas;
 
+  /// \brief A vector of macros that should be interpreted as foreach loops
+  /// instead of as function calls.
+  ///
+  /// These are expected to be macros of the form:
+  /// \code
+  /// FOREACH(<variable-declaration>, ...)
+  ///   <loop-body>
+  /// \endcode
+  ///
+  /// For example: BOOST_FOREACH.
+  std::vector<std::string> ForEachMacros;
+
   bool operator==(const FormatStyle &R) const {
     return AccessModifierOffset == R.AccessModifierOffset &&
            ConstructorInitializerIndentWidth ==
@@ -328,7 +348,10 @@ struct FormatStyle {
                R.IndentFunctionDeclarationAfterType &&
            IndentWidth == R.IndentWidth && Language == R.Language &&
            MaxEmptyLinesToKeep == R.MaxEmptyLinesToKeep &&
+           KeepEmptyLinesAtTheStartOfBlocks ==
+               R.KeepEmptyLinesAtTheStartOfBlocks &&
            NamespaceIndentation == R.NamespaceIndentation &&
+           ObjCSpaceAfterProperty == R.ObjCSpaceAfterProperty &&
            ObjCSpaceBeforeProtocolList == R.ObjCSpaceBeforeProtocolList &&
            PenaltyBreakComment == R.PenaltyBreakComment &&
            PenaltyBreakFirstLessLess == R.PenaltyBreakFirstLessLess &&
@@ -347,7 +370,8 @@ struct FormatStyle {
            SpaceBeforeParens == R.SpaceBeforeParens &&
            SpaceBeforeAssignmentOperators == R.SpaceBeforeAssignmentOperators &&
            ContinuationIndentWidth == R.ContinuationIndentWidth &&
-           CommentPragmas == R.CommentPragmas;
+           CommentPragmas == R.CommentPragmas &&
+           ForEachMacros == R.ForEachMacros;
   }
 };
 
@@ -355,22 +379,15 @@ struct FormatStyle {
 /// http://llvm.org/docs/CodingStandards.html.
 FormatStyle getLLVMStyle();
 
-/// \brief Returns a format style complying with Google's C++ style guide:
+/// \brief Returns a format style complying with one of Google's style guides:
 /// http://google-styleguide.googlecode.com/svn/trunk/cppguide.xml.
-FormatStyle getGoogleStyle();
-
-/// \brief Returns a format style complying with Google's JavaScript style
-/// guide:
 /// http://google-styleguide.googlecode.com/svn/trunk/javascriptguide.xml.
-FormatStyle getGoogleJSStyle();
-
-/// \brief Returns a format style complying with Google's Protocol Buffer style:
 /// https://developers.google.com/protocol-buffers/docs/style.
-FormatStyle getGoogleProtoStyle();
+FormatStyle getGoogleStyle(FormatStyle::LanguageKind Language);
 
 /// \brief Returns a format style complying with Chromium's style guide:
 /// http://www.chromium.org/developers/coding-style.
-FormatStyle getChromiumStyle();
+FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language);
 
 /// \brief Returns a format style complying with Mozilla's style guide:
 /// https://developer.mozilla.org/en-US/docs/Developer_Guide/Coding_Style.

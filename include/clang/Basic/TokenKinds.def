@@ -229,6 +229,7 @@ PUNCTUATOR(greatergreatergreater, ">>>")
 //   KEYALTIVEC - This is a keyword in AltiVec
 //   KEYBORLAND - This is a keyword if Borland extensions are enabled
 //   BOOLSUPPORT - This is a keyword if 'bool' is a built-in type
+//   HALFSUPPORT - This is a keyword if 'half' is a built-in type
 //   WCHARSUPPORT - This is a keyword if 'wchar_t' is a built-in type
 //
 KEYWORD(auto                        , KEYALL)
@@ -267,7 +268,7 @@ KEYWORD(volatile                    , KEYALL)
 KEYWORD(while                       , KEYALL)
 KEYWORD(_Alignas                    , KEYALL)
 KEYWORD(_Alignof                    , KEYALL)
-KEYWORD(_Atomic                     , KEYALL)
+KEYWORD(_Atomic                     , KEYALL|KEYNOMS)
 KEYWORD(_Bool                       , KEYNOCXX)
 KEYWORD(_Complex                    , KEYALL)
 KEYWORD(_Generic                    , KEYALL)
@@ -455,7 +456,7 @@ KEYWORD(__cdecl                     , KEYALL)
 KEYWORD(__stdcall                   , KEYALL)
 KEYWORD(__fastcall                  , KEYALL)
 KEYWORD(__thiscall                  , KEYALL)
-KEYWORD(__forceinline               , KEYALL)
+KEYWORD(__forceinline               , KEYMS)
 KEYWORD(__unaligned                 , KEYMS)
 
 // OpenCL address space qualifiers
@@ -492,7 +493,7 @@ KEYWORD(__pixel                     , KEYALTIVEC)
 ALIAS("__fp16", half                , KEYALL)
 
 // OpenCL Extension.
-KEYWORD(half                        , KEYOPENCL)
+KEYWORD(half                        , HALFSUPPORT)
 
 // Objective-C ARC keywords.
 KEYWORD(__bridge                     , KEYARC)
@@ -672,6 +673,16 @@ ANNOTATION(pragma_redefine_extname)
 // The lexer produces these so that they only take effect when the parser
 // handles them.
 ANNOTATION(pragma_fp_contract)
+
+// Annotation for #pragma pointers_to_members...
+// The lexer produces these so that they only take effect when the parser
+// handles them.
+ANNOTATION(pragma_ms_pointers_to_members)
+
+// Annotation for #pragma vtordisp...
+// The lexer produces these so that they only take effect when the parser
+// handles them.
+ANNOTATION(pragma_ms_vtordisp)
 
 // Annotation for #pragma OPENCL EXTENSION...
 // The lexer produces these so that they only take effect when the parser
