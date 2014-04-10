@@ -2508,8 +2508,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // enabled.  This alias option is being used to simplify the hasFlag logic.
   OptSpecifier StrictAliasingAliasOption = OFastEnabled ? options::OPT_Ofast :
     options::OPT_fstrict_aliasing;
+  // We turn strict aliasing off by default if we're in CL mode, since MSVC
+  // doesn't do any TBAA.
+  bool TBAAOnByDefault = !getToolChain().getDriver().IsCLMode();
   if (!Args.hasFlag(options::OPT_fstrict_aliasing, StrictAliasingAliasOption,
-                    options::OPT_fno_strict_aliasing, true))
+                    options::OPT_fno_strict_aliasing, TBAAOnByDefault))
     CmdArgs.push_back("-relaxed-aliasing");
   if (!Args.hasFlag(options::OPT_fstruct_path_tbaa,
                     options::OPT_fno_struct_path_tbaa))
@@ -4267,12 +4270,6 @@ void Clang::AddClangCLArgs(const ArgList &Args, ArgStringList &CmdArgs) const {
   // RTTI is currently not supported, so disable it by default.
   if (!Args.hasArg(options::OPT_frtti, options::OPT_fno_rtti))
     CmdArgs.push_back("-fno-rtti");
-
-  // Let -ffunction-sections imply -fdata-sections.
-  if (Arg * A = Args.getLastArg(options::OPT_ffunction_sections,
-                                options::OPT_fno_function_sections))
-    if (A->getOption().matches(options::OPT_ffunction_sections))
-      CmdArgs.push_back("-fdata-sections");
 
   const Driver &D = getToolChain().getDriver();
   Arg *MostGeneralArg = Args.getLastArg(options::OPT__SLASH_vmg);
@@ -7552,6 +7549,10 @@ Command *visualstudio::Compile::GetCommand(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(A->getOption().getID() == options::OPT_ffunction_sections
                           ? "/Gy"
                           : "/Gy-");
+  if (Arg *A = Args.getLastArg(options::OPT_fdata_sections,
+                               options::OPT_fno_data_sections))
+    CmdArgs.push_back(
+        A->getOption().getID() == options::OPT_fdata_sections ? "/Gw" : "/Gw-");
   if (Args.hasArg(options::OPT_fsyntax_only))
     CmdArgs.push_back("/Zs");
   if (Args.hasArg(options::OPT_g_Flag, options::OPT_gline_tables_only))

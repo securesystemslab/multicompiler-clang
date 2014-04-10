@@ -109,6 +109,7 @@ class CGDebugInfo {
   llvm::DIType CreateType(const ComplexType *Ty);
   llvm::DIType CreateQualifiedType(QualType Ty, llvm::DIFile Fg);
   llvm::DIType CreateType(const TypedefType *Ty, llvm::DIFile Fg);
+  llvm::DIType CreateType(const TemplateSpecializationType *Ty, llvm::DIFile Fg);
   llvm::DIType CreateType(const ObjCObjectPointerType *Ty,
                           llvm::DIFile F);
   llvm::DIType CreateType(const PointerType *Ty, llvm::DIFile F);
@@ -356,6 +357,13 @@ private:
   /// declaration for the given out-of-class definition.
   llvm::DIDerivedType
   getOrCreateStaticDataMemberDeclarationOrNull(const VarDecl *D);
+
+  /// Return a global variable that represents one of the collection of
+  /// global variables created for an anonmyous union.
+  llvm::DIGlobalVariable
+  CollectAnonRecordDecls(const RecordDecl *RD, llvm::DIFile Unit, unsigned LineNo,
+                         StringRef LinkageName, llvm::GlobalVariable *Var,
+                         llvm::DIDescriptor DContext);
 
   /// getFunctionName - Get function name for the given FunctionDecl. If the
   /// name is constructed on demand (e.g. C++ destructor) then the name

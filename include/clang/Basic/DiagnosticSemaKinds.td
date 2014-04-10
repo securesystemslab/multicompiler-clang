@@ -521,6 +521,7 @@ def warn_cxx_ms_struct :
   Warning<"ms_struct may not produce MSVC-compatible layouts for classes "
           "with base classes or virtual functions">,
   DefaultError, InGroup<IncompatibleMSStruct>;
+def err_section_conflict : Error<"%0 causes a section type conflict with %1">;
 
 def warn_pragma_unused_undeclared_var : Warning<
   "undeclared variable %0 used as an argument for '#pragma unused'">,
@@ -6383,6 +6384,9 @@ def note_ref_subobject_of_member_declared_here : Note<
 def warn_comparison_always : Warning<
   "%select{self-|array }0comparison always evaluates to %select{false|true|a constant}1">,
   InGroup<TautologicalCompare>;
+def warn_tautological_overlap_comparison : Warning<
+  "overlapping comparisons always evaluate to %select{false|true}0">,
+  InGroup<TautologicalOverlapCompare>, DefaultIgnore;
 
 def warn_stringcompare : Warning<
   "result of comparison against %select{a string literal|@encode}0 is "

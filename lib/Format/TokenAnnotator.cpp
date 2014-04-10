@@ -245,7 +245,7 @@ private:
           StartsObjCMethodExpr = false;
           Left->Type = TT_Unknown;
         }
-        if (StartsObjCMethodExpr) {
+        if (StartsObjCMethodExpr && CurrentToken->Previous != Left) {
           CurrentToken->Type = TT_ObjCMethodExpr;
           // determineStarAmpUsage() thinks that '*' '[' is allocating an
           // array of pointers, but if '[' starts a selector then '*' is a
@@ -727,10 +727,9 @@ private:
                                   Contexts.back().InTemplateArgument);
       } else if (Current.isOneOf(tok::minus, tok::plus, tok::caret)) {
         Current.Type = determinePlusMinusCaretUsage(Current);
-        if (Current.Type == TT_UnaryOperator) {
+        if (Current.Type == TT_UnaryOperator && Current.is(tok::caret)) {
           ++Contexts.back().NumBlockParameters;
-          if (Current.is(tok::caret))
-            Contexts.back().CaretFound = true;
+          Contexts.back().CaretFound = true;
         }
       } else if (Current.isOneOf(tok::minusminus, tok::plusplus)) {
         Current.Type = determineIncrementUsage(Current);
@@ -1280,11 +1279,9 @@ unsigned TokenAnnotator::splitPenalty(const AnnotatedLine &Line,
     // annotations (i.e. "const", "final" and "override") on the same line.
     // Use a slightly higher penalty after ")" so that annotations like
     // "const override" are kept together.
-    bool is_standard_annotation = Right.is(tok::kw_const) ||
-                                  Right.TokenText == "override" ||
-                                  Right.TokenText == "final";
+    bool is_short_annotation = Right.TokenText.size() < 10;
     return (Left.is(tok::r_paren) ? 100 : 120) +
-           (is_standard_annotation ? 50 : 0);
+           (is_short_annotation ? 50 : 0);
   }
 
   // In for-loops, prefer breaking at ',' and ';'.
@@ -1547,14 +1544,20 @@ bool TokenAnnotator::mustBreakBefore(const AnnotatedLine &Line,
              Style.Language == FormatStyle::LK_Proto) {
     // Don't enums onto single lines in protocol buffers.
     return true;
-  } else if ((Left.is(tok::l_brace) && Left.MatchingParen &&
-              Left.MatchingParen->Previous &&
-              Left.MatchingParen->Previous->is(tok::comma)) ||
-             (Right.is(tok::r_brace) && Left.is(tok::comma))) {
-    // If the last token before a '}' is a comma, the intention is to insert a
-    // line break after it in order to make shuffling around entries easier.
-    return true;
   }
+
+  // If the last token before a '}' is a comma or a comment, the intention is to
+  // insert a line break after it in order to make shuffling around entries
+  // easier.
+  const FormatToken *BeforeClosingBrace = nullptr;
+  if (Left.is(tok::l_brace) && Left.MatchingParen)
+    BeforeClosingBrace = Left.MatchingParen->Previous;
+  else if (Right.is(tok::r_brace))
+    BeforeClosingBrace = Right.Previous;
+  if (BeforeClosingBrace &&
+      BeforeClosingBrace->isOneOf(tok::comma, tok::comment))
+    return true;
+
   return false;
 }
 
@@ -1622,11 +1625,11 @@ bool TokenAnnotator::canBreakBefore(const AnnotatedLine &Line,
   if (Right.is(tok::r_brace))
     return Right.MatchingParen && Right.MatchingParen->BlockKind == BK_Block;
 
-  // Allow breaking after a trailing 'const', e.g. after a method declaration,
-  // unless it is follow by ';', '{' or '='.
-  if (Left.is(tok::kw_const) && Left.Previous != NULL &&
-      Left.Previous->is(tok::r_paren))
-    return !Right.isOneOf(tok::l_brace, tok::semi, tok::equal);
+  // Allow breaking after a trailing annotation, e.g. after a method
+  // declaration.
+  if (Left.Type == TT_TrailingAnnotation)
+    return !Right.isOneOf(tok::l_brace, tok::semi, tok::equal, tok::l_paren,
+                          tok::less, tok::coloncolon);
 
   if (Right.is(tok::kw___attribute))
     return true;

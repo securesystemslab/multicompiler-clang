@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-inlining=destructors -Wno-null-dereference -verify %s
+// RUN: %clang_cc1 -analyze -analyzer-checker=core,unix.Malloc,debug.ExprInspection -analyzer-config c++-inlining=destructors,cfg-temporary-dtors=true -Wno-null-dereference -verify %s
 
 void clang_analyzer_eval(bool);
 void clang_analyzer_checkInlined(bool);
@@ -432,6 +432,12 @@ namespace LifetimeExtension {
     return false;
   }
 
+  bool testMultipleTemporariesCustomDestructor() {
+    if (CheckCustomDestructor c = (CheckCustomDestructor(), CheckCustomDestructor()))
+      return true;
+    return false;
+  }
+
   class VirtualDtorBase {
   public:
     int value;
@@ -477,8 +483,7 @@ namespace NoReturn {
 
   void g2(int *x) {
     if (! x) NR();
-    // FIXME: this shouldn't cause a warning.
-    *x = 47; // expected-warning{{Dereference of null pointer}}
+    *x = 47; // no warning
   }
 }
 
