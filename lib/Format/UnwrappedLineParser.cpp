@@ -465,14 +465,14 @@ void UnwrappedLineParser::parsePPDirective() {
   }
 }
 
-void UnwrappedLineParser::pushPPConditional() {
-  if (!PPStack.empty() && PPStack.back() == PP_Unreachable)
+void UnwrappedLineParser::conditionalCompilationCondition(bool Unreachable) {
+  if (Unreachable || (!PPStack.empty() && PPStack.back() == PP_Unreachable))
     PPStack.push_back(PP_Unreachable);
   else
     PPStack.push_back(PP_Conditional);
 }
 
-void UnwrappedLineParser::parsePPIf(bool IfDef) {
+void UnwrappedLineParser::conditionalCompilationStart(bool Unreachable) {
   ++PPBranchLevel;
   assert(PPBranchLevel >= 0 && PPBranchLevel <= (int)PPLevelBranchIndex.size());
   if (PPBranchLevel == (int)PPLevelBranchIndex.size()) {
@@ -480,37 +480,22 @@ void UnwrappedLineParser::parsePPIf(bool IfDef) {
     PPLevelBranchCount.push_back(0);
   }
   PPChainBranchIndex.push(0);
-  nextToken();
-  bool IsLiteralFalse = (FormatTok->Tok.isLiteral() &&
-                         StringRef(FormatTok->Tok.getLiteralData(),
-                                   FormatTok->Tok.getLength()) == "0") ||
-                        FormatTok->Tok.is(tok::kw_false);
-  if ((!IfDef && IsLiteralFalse) || PPLevelBranchIndex[PPBranchLevel] > 0) {
-    PPStack.push_back(PP_Unreachable);
-  } else {
-    pushPPConditional();
-  }
-  parsePPUnknown();
+  bool Skip = PPLevelBranchIndex[PPBranchLevel] > 0;
+  conditionalCompilationCondition(Unreachable || Skip);
 }
 
-void UnwrappedLineParser::parsePPElse() {
+void UnwrappedLineParser::conditionalCompilationAlternative() {
   if (!PPStack.empty())
     PPStack.pop_back();
   assert(PPBranchLevel < (int)PPLevelBranchIndex.size());
   if (!PPChainBranchIndex.empty())
     ++PPChainBranchIndex.top();
-  if (PPBranchLevel >= 0 && !PPChainBranchIndex.empty() &&
-      PPLevelBranchIndex[PPBranchLevel] != PPChainBranchIndex.top()) {
-    PPStack.push_back(PP_Unreachable);
-  } else {
-    pushPPConditional();
-  }
-  parsePPUnknown();
+  conditionalCompilationCondition(
+      PPBranchLevel >= 0 && !PPChainBranchIndex.empty() &&
+      PPLevelBranchIndex[PPBranchLevel] != PPChainBranchIndex.top());
 }
 
-void UnwrappedLineParser::parsePPElIf() { parsePPElse(); }
-
-void UnwrappedLineParser::parsePPEndIf() {
+void UnwrappedLineParser::conditionalCompilationEnd() {
   assert(PPBranchLevel < (int)PPLevelBranchIndex.size());
   if (PPBranchLevel >= 0 && !PPChainBranchIndex.empty()) {
     if (PPChainBranchIndex.top() + 1 > PPLevelBranchCount[PPBranchLevel]) {
@@ -524,6 +509,27 @@ void UnwrappedLineParser::parsePPEndIf() {
     PPChainBranchIndex.pop();
   if (!PPStack.empty())
     PPStack.pop_back();
+}
+
+void UnwrappedLineParser::parsePPIf(bool IfDef) {
+  nextToken();
+  bool IsLiteralFalse = (FormatTok->Tok.isLiteral() &&
+                         StringRef(FormatTok->Tok.getLiteralData(),
+                                   FormatTok->Tok.getLength()) == "0") ||
+                        FormatTok->Tok.is(tok::kw_false);
+  conditionalCompilationStart(!IfDef && IsLiteralFalse);
+  parsePPUnknown();
+}
+
+void UnwrappedLineParser::parsePPElse() {
+  conditionalCompilationAlternative();
+  parsePPUnknown();
+}
+
+void UnwrappedLineParser::parsePPElIf() { parsePPElse(); }
+
+void UnwrappedLineParser::parsePPEndIf() {
+  conditionalCompilationEnd();
   parsePPUnknown();
 }
 
@@ -1358,13 +1364,18 @@ void UnwrappedLineParser::addUnwrappedLine() {
 
 bool UnwrappedLineParser::eof() const { return FormatTok->Tok.is(tok::eof); }
 
+bool UnwrappedLineParser::isOnNewLine(const FormatToken& FormatTok) {
+  return (Line->InPPDirective || FormatTok.HasUnescapedNewline) &&
+         FormatTok.NewlinesBefore > 0;
+}
+
 void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
   bool JustComments = Line->Tokens.empty();
   for (SmallVectorImpl<FormatToken *>::const_iterator
            I = CommentsBeforeNextToken.begin(),
            E = CommentsBeforeNextToken.end();
        I != E; ++I) {
-    if ((*I)->NewlinesBefore && JustComments) {
+    if (isOnNewLine(**I) && JustComments) {
       addUnwrappedLine();
     }
     pushToken(*I);
@@ -1378,7 +1389,7 @@ void UnwrappedLineParser::flushComments(bool NewlineBeforeNext) {
 void UnwrappedLineParser::nextToken() {
   if (eof())
     return;
-  flushComments(FormatTok->NewlinesBefore > 0);
+  flushComments(isOnNewLine(*FormatTok));
   pushToken(FormatTok);
   readToken();
 }
@@ -1398,8 +1409,21 @@ void UnwrappedLineParser::readToken() {
       // Comments stored before the preprocessor directive need to be output
       // before the preprocessor directive, at the same level as the
       // preprocessor directive, as we consider them to apply to the directive.
-      flushComments(FormatTok->NewlinesBefore > 0);
+      flushComments(isOnNewLine(*FormatTok));
       parsePPDirective();
+    }
+    while (FormatTok->Type == TT_ConflictStart ||
+           FormatTok->Type == TT_ConflictEnd ||
+           FormatTok->Type == TT_ConflictAlternative) {
+      if (FormatTok->Type == TT_ConflictStart) {
+        conditionalCompilationStart(/*Unreachable=*/false);
+      } else if (FormatTok->Type == TT_ConflictAlternative) {
+        conditionalCompilationAlternative();
+      } else if(FormatTok->Type == TT_ConflictEnd) {
+        conditionalCompilationEnd();
+      }
+      FormatTok = Tokens->getNextToken();
+      FormatTok->MustBreakBefore = true;
     }
 
     if (!PPStack.empty() && (PPStack.back() == PP_Unreachable) &&
@@ -1409,7 +1433,7 @@ void UnwrappedLineParser::readToken() {
 
     if (!FormatTok->Tok.is(tok::comment))
       return;
-    if (FormatTok->NewlinesBefore > 0 || FormatTok->IsFirst) {
+    if (isOnNewLine(*FormatTok) || FormatTok->IsFirst) {
       CommentsInCurrentLine = false;
     }
     if (CommentsInCurrentLine) {
