@@ -119,9 +119,6 @@ public:
   /// file, for example with -save-temps.
   std::string MainFileName;
 
-  /// Random seed used for the random number generator
-  uint64_t RandomSeed;
-
   /// The name for the split debug info file that we'll break out. This is used
   /// in the backend for setting the name in the skeleton cu.
   std::string SplitDwarfFile;
