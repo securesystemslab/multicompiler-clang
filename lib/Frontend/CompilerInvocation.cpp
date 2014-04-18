@@ -1676,13 +1676,12 @@ static void ParseTargetArgs(TargetOptions &Opts, ArgList &Args) {
 }
 
 static void SaltRNG(ArgList &Args) {
+  // TODO(D3391): Decide and document how to salt.
+  // Repeatable builds for: 1) single developers or 2) across machines?
   std::vector<std::string> Inputs = Args.getAllArgValues(OPT_INPUT);
-  std::string SaltString;
-  for (std::vector<std::string>::iterator I = Inputs.begin(), E = Inputs.end();
-       I != E; ++I) {
-    SaltString += *I;
-  }
-  llvm::RandomNumberGenerator::SetSalt(SaltString);
+  std::string Salt = std::accumulate(Inputs.begin(), Inputs.end(),
+                                     std::string());
+  llvm::RandomNumberGenerator::SetSalt(Salt);
 }
 
 bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
