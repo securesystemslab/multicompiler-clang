@@ -1382,6 +1382,19 @@ public:
                                              EndLoc);
   }
 
+  /// \brief Build a new OpenMP 'linear' clause.
+  ///
+  /// By default, performs semantic analysis to build the new statement.
+  /// Subclasses may override this routine to provide different behavior.
+  OMPClause *RebuildOMPLinearClause(ArrayRef<Expr *> VarList, Expr *Step,
+                                    SourceLocation StartLoc,
+                                    SourceLocation LParenLoc,
+                                    SourceLocation ColonLoc,
+                                    SourceLocation EndLoc) {
+    return getSema().ActOnOpenMPLinearClause(VarList, Step, StartLoc, LParenLoc,
+                                             ColonLoc, EndLoc);
+  }
+
   /// \brief Build a new OpenMP 'copyin' clause.
   ///
   /// By default, performs semantic analysis to build the new statement.
@@ -6436,6 +6449,25 @@ TreeTransform<Derived>::TransformOMPSharedClause(OMPSharedClause *C) {
 
 template<typename Derived>
 OMPClause *
+TreeTransform<Derived>::TransformOMPLinearClause(OMPLinearClause *C) {
+  llvm::SmallVector<Expr *, 16> Vars;
+  Vars.reserve(C->varlist_size());
+  for (auto *VE : C->varlists()) {
+    ExprResult EVar = getDerived().TransformExpr(cast<Expr>(VE));
+    if (EVar.isInvalid())
+      return 0;
+    Vars.push_back(EVar.take());
+  }
+  ExprResult Step = getDerived().TransformExpr(C->getStep());
+  if (Step.isInvalid())
+    return 0;
+  return getDerived().RebuildOMPLinearClause(
+      Vars, Step.take(), C->getLocStart(), C->getLParenLoc(), C->getColonLoc(),
+      C->getLocEnd());
+}
+
+template<typename Derived>
+OMPClause *
 TreeTransform<Derived>::TransformOMPCopyinClause(OMPCopyinClause *C) {
   llvm::SmallVector<Expr *, 16> Vars;
   Vars.reserve(C->varlist_size());
@@ -9759,9 +9791,6 @@ TreeTransform<Derived>::RebuildCXXOperatorCallExpr(OverloadedOperatorKind Op,
 
   if (UnresolvedLookupExpr *ULE = dyn_cast<UnresolvedLookupExpr>(Callee)) {
     assert(ULE->requiresADL());
-
-    // FIXME: Do we have to check
-    // IsAcceptableNonMemberOperatorCandidate for each of these?
     Functions.append(ULE->decls_begin(), ULE->decls_end());
   } else {
     // If we've resolved this to a particular non-member function, just call

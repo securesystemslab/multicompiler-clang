@@ -17,6 +17,8 @@
 #include "clang/Basic/SourceManager.h"
 #include "llvm/Support/Debug.h"
 
+#define DEBUG_TYPE "format-token-annotator"
+
 namespace clang {
 namespace format {
 
@@ -978,6 +980,7 @@ public:
 
     FormatToken *Start = Current;
     FormatToken *LatestOperator = NULL;
+    unsigned OperatorIndex = 0;
 
     while (Current) {
       // Consume operators with higher precedence.
@@ -997,8 +1000,8 @@ public:
       if (Current == NULL || Current->closesScope() ||
           (CurrentPrecedence != -1 && CurrentPrecedence < Precedence)) {
         if (LatestOperator) {
+          LatestOperator->LastOperator = true;
           if (Precedence == PrecedenceArrowAndPeriod) {
-            LatestOperator->LastInChainOfCalls = true;
             // Call expressions don't have a binary operator precedence.
             addFakeParenthesis(Start, prec::Unknown);
           } else {
@@ -1017,8 +1020,11 @@ public:
         next();
       } else {
         // Operator found.
-        if (CurrentPrecedence == Precedence)
+        if (CurrentPrecedence == Precedence) {
           LatestOperator = Current;
+          Current->OperatorIndex = OperatorIndex;
+          ++OperatorIndex;
+        }
 
         next();
       }

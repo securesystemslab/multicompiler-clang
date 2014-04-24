@@ -7,12 +7,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "format-test"
-
 #include "FormatTestUtils.h"
 #include "clang/Format/Format.h"
 #include "llvm/Support/Debug.h"
 #include "gtest/gtest.h"
+
+#define DEBUG_TYPE "format-test"
 
 namespace clang {
 namespace format {
@@ -1013,6 +1013,30 @@ TEST_F(FormatTest, AlignsBlockComments) {
             format("int i; /* Comment with empty...\n"
                    "        *\n"
                    "        * line. */"));
+  EXPECT_EQ("int foobar = 0; /* comment */\n"
+            "int bar = 0;    /* multiline\n"
+            "                   comment 1 */\n"
+            "int baz = 0;    /* multiline\n"
+            "                   comment 2 */\n"
+            "int bzz = 0;    /* multiline\n"
+            "                   comment 3 */",
+            format("int foobar = 0; /* comment */\n"
+                   "int bar = 0;    /* multiline\n"
+                   "                   comment 1 */\n"
+                   "int baz = 0; /* multiline\n"
+                   "                comment 2 */\n"
+                   "int bzz = 0;         /* multiline\n"
+                   "                        comment 3 */"));
+  EXPECT_EQ("int foobar = 0; /* comment */\n"
+            "int bar = 0;    /* multiline\n"
+            "   comment */\n"
+            "int baz = 0;    /* multiline\n"
+            "comment */",
+            format("int foobar = 0; /* comment */\n"
+                   "int bar = 0; /* multiline\n"
+                   "comment */\n"
+                   "int baz = 0;        /* multiline\n"
+                   "comment */"));
 }
 
 TEST_F(FormatTest, CorrectlyHandlesLengthOfBlockComments) {
@@ -3983,6 +4007,18 @@ TEST_F(FormatTest, AlignsPipes) {
       "aaaaaaaa << (aaaaaaaaaaaaaaaaaaa << aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
       "                                 << aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n"
       "         << aaaaaaaaaaaaaaaaaaaaaaaaaaaaa;");
+  verifyFormat(
+      "llvm::errs() << \"a: \" << aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+      "                             aaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+      "                             aaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
+  verifyFormat(
+      "llvm::errs() << aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+      "                    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
+      "                    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa)\n"
+      "             << bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb;");
+  verifyFormat(
+      "llvm::errs() << aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+      "    aaaaaaaaaaaaaaaaaaaaaaaaaaaa, aaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
 
   verifyFormat("return out << \"somepacket = {\\n\"\n"
                "           << \" aaaaaa = \" << pkt.aaaaaa << \"\\n\"\n"
@@ -5015,7 +5051,7 @@ TEST_F(FormatTest, LayoutBraceInitializersInReturnStatement) {
   verifyFormat("return (a)(b) {1, 2, 3};");
 }
 
-TEST_F(FormatTest, LayoutCxx11ConstructorBraceInitializers) {
+TEST_F(FormatTest, LayoutCxx11BraceInitializers) {
   verifyFormat("vector<int> x{1, 2, 3, 4};");
   verifyFormat("vector<int> x{\n"
                "    1, 2, 3, 4,\n"
@@ -5036,6 +5072,36 @@ TEST_F(FormatTest, LayoutCxx11ConstructorBraceInitializers) {
                "  T member = {arg1, arg2};\n"
                "};");
   verifyFormat("vector<int> foo = {::SomeGlobalFunction()};");
+
+  // In combination with BinPackParameters = false.
+  FormatStyle NoBinPacking = getLLVMStyle();
+  NoBinPacking.BinPackParameters = false;
+  verifyFormat("const Aaaaaa aaaaa = {aaaaa,\n"
+               "                      bbbbb,\n"
+               "                      ccccc,\n"
+               "                      ddddd,\n"
+               "                      eeeee,\n"
+               "                      ffffff,\n"
+               "                      ggggg,\n"
+               "                      hhhhhh,\n"
+               "                      iiiiii,\n"
+               "                      jjjjjj,\n"
+               "                      kkkkkk};",
+               NoBinPacking);
+  verifyFormat("const Aaaaaa aaaaa = {\n"
+               "    aaaaa,\n"
+               "    bbbbb,\n"
+               "    ccccc,\n"
+               "    ddddd,\n"
+               "    eeeee,\n"
+               "    ffffff,\n"
+               "    ggggg,\n"
+               "    hhhhhh,\n"
+               "    iiiiii,\n"
+               "    jjjjjj,\n"
+               "    kkkkkk,\n"
+               "};",
+               NoBinPacking);
 
   // FIXME: The alignment of these trailing comments might be bad. Then again,
   // this might be utterly useless in real code.

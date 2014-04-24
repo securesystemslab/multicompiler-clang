@@ -3158,7 +3158,7 @@ private:
   ABIArgInfo classifyReturnType(QualType RetTy) const;
   ABIArgInfo classifyArgumentType(QualType RetTy, unsigned &AllocatedVFP,
                                   bool &IsHA, unsigned &AllocatedGPR,
-                                  bool &IsSmallAggr) const;
+                                  bool &IsSmallAggr, bool IsNamedArg) const;
   bool isIllegalVectorType(QualType Ty) const;
 
   virtual void computeInfo(CGFunctionInfo &FI) const {
@@ -3169,11 +3169,19 @@ private:
     // and Floating-point Registers (with one register per member of the HFA or
     // HVA). Otherwise, the NSRN is set to 8.
     unsigned AllocatedVFP = 0;
+
     // To correctly handle small aggregates, we need to keep track of the number
     // of GPRs allocated so far. If the small aggregate can't all fit into
     // registers, it will be on stack. We don't allow the aggregate to be
     // partially in registers.
     unsigned AllocatedGPR = 0;
+
+    // Find the number of named arguments. Variadic arguments get special
+    // treatment with the Darwin ABI.
+    unsigned NumRequiredArgs = (FI.isVariadic() ?
+                                FI.getRequiredArgs().getNumRequiredArgs() :
+                                FI.arg_size());
+
     FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
     for (CGFunctionInfo::arg_iterator it = FI.arg_begin(), ie = FI.arg_end();
          it != ie; ++it) {
@@ -3181,28 +3189,33 @@ private:
       bool IsHA = false, IsSmallAggr = false;
       const unsigned NumVFPs = 8;
       const unsigned NumGPRs = 8;
+      bool IsNamedArg = ((it - FI.arg_begin()) <
+                         static_cast<signed>(NumRequiredArgs));
       it->info = classifyArgumentType(it->type, AllocatedVFP, IsHA,
-                                      AllocatedGPR, IsSmallAggr);
+                                      AllocatedGPR, IsSmallAggr, IsNamedArg);
+
+      // Under AAPCS the 64-bit stack slot alignment means we can't pass HAs
+      // as sequences of floats since they'll get "holes" inserted as
+      // padding by the back end.
+      if (IsHA && AllocatedVFP > NumVFPs && !isDarwinPCS() &&
+          getContext().getTypeAlign(it->type) < 64) {
+        uint32_t NumStackSlots = getContext().getTypeSize(it->type);
+        NumStackSlots = llvm::RoundUpToAlignment(NumStackSlots, 64) / 64;
+
+        llvm::Type *CoerceTy = llvm::ArrayType::get(
+            llvm::Type::getDoubleTy(getVMContext()), NumStackSlots);
+        it->info = ABIArgInfo::getDirect(CoerceTy);
+      }
+
       // If we do not have enough VFP registers for the HA, any VFP registers
       // that are unallocated are marked as unavailable. To achieve this, we add
       // padding of (NumVFPs - PreAllocation) floats.
       if (IsHA && AllocatedVFP > NumVFPs && PreAllocation < NumVFPs) {
         llvm::Type *PaddingTy = llvm::ArrayType::get(
             llvm::Type::getFloatTy(getVMContext()), NumVFPs - PreAllocation);
-        if (isDarwinPCS())
-          it->info = ABIArgInfo::getExpandWithPadding(false, PaddingTy);
-        else {
-          // Under AAPCS the 64-bit stack slot alignment means we can't pass HAs
-          // as sequences of floats since they'll get "holes" inserted as
-          // padding by the back end.
-          uint32_t NumStackSlots = getContext().getTypeSize(it->type);
-          NumStackSlots = llvm::RoundUpToAlignment(NumStackSlots, 64) / 64;
-
-          llvm::Type *CoerceTy = llvm::ArrayType::get(
-              llvm::Type::getDoubleTy(getVMContext()), NumStackSlots);
-          it->info = ABIArgInfo::getDirect(CoerceTy, 0, PaddingTy);
-        }
+        it->info.setPaddingType(PaddingTy);
       }
+
       // If we do not have enough GPRs for the small aggregate, any GPR regs
       // that are unallocated are marked as unavailable.
       if (IsSmallAggr && AllocatedGPR > NumGPRs && PreGPR < NumGPRs) {
@@ -3250,7 +3263,8 @@ ABIArgInfo ARM64ABIInfo::classifyArgumentType(QualType Ty,
                                               unsigned &AllocatedVFP,
                                               bool &IsHA,
                                               unsigned &AllocatedGPR,
-                                              bool &IsSmallAggr) const {
+                                              bool &IsSmallAggr,
+                                              bool IsNamedArg) const {
   // Handle illegal vector types here.
   if (isIllegalVectorType(Ty)) {
     uint64_t Size = getContext().getTypeSize(Ty);
@@ -3324,8 +3338,15 @@ ABIArgInfo ARM64ABIInfo::classifyArgumentType(QualType Ty,
   const Type *Base = 0;
   uint64_t Members = 0;
   if (isHomogeneousAggregate(Ty, Base, getContext(), &Members)) {
-    AllocatedVFP += Members;
     IsHA = true;
+    if (!IsNamedArg && isDarwinPCS()) {
+      // With the Darwin ABI, variadic arguments are always passed on the stack
+      // and should not be expanded. Treat variadic HFAs as arrays of doubles.
+      uint64_t Size = getContext().getTypeSize(Ty);
+      llvm::Type *BaseTy = llvm::Type::getDoubleTy(getVMContext());
+      return ABIArgInfo::getDirect(llvm::ArrayType::get(BaseTy, Size / 64));
+    }
+    AllocatedVFP += Members;
     return ABIArgInfo::getExpand();
   }
 
@@ -3365,8 +3386,9 @@ ABIArgInfo ARM64ABIInfo::classifyReturnType(QualType RetTy) const {
     if (const EnumType *EnumTy = RetTy->getAs<EnumType>())
       RetTy = EnumTy->getDecl()->getIntegerType();
 
-    return (RetTy->isPromotableIntegerType() ? ABIArgInfo::getExtend()
-                                             : ABIArgInfo::getDirect());
+    return (RetTy->isPromotableIntegerType() && isDarwinPCS()
+                ? ABIArgInfo::getExtend()
+                : ABIArgInfo::getDirect());
   }
 
   // Structures with either a non-trivial destructor or a non-trivial
@@ -3460,7 +3482,7 @@ static llvm::Value *EmitAArch64VAArg(llvm::Value *VAListAddr, QualType Ty,
   CGF.Builder.CreateCondBr(UsingStack, OnStackBlock, MaybeRegBlock);
 
   // Otherwise, at least some kind of argument could go in these registers, the
-  // quesiton is whether this particular type is too big.
+  // question is whether this particular type is too big.
   CGF.EmitBlock(MaybeRegBlock);
 
   // Integer arguments may need to correct register alignment (for example a
@@ -3637,8 +3659,8 @@ llvm::Value *ARM64ABIInfo::EmitAAPCSVAArg(llvm::Value *VAListAddr, QualType Ty,
 
   unsigned AllocatedGPR = 0, AllocatedVFP = 0;
   bool IsHA = false, IsSmallAggr = false;
-  ABIArgInfo AI =
-      classifyArgumentType(Ty, AllocatedVFP, IsHA, AllocatedGPR, IsSmallAggr);
+  ABIArgInfo AI = classifyArgumentType(Ty, AllocatedVFP, IsHA, AllocatedGPR,
+                                       IsSmallAggr, false /*IsNamedArg*/);
 
   return EmitAArch64VAArg(VAListAddr, Ty, AllocatedGPR, AllocatedVFP,
                           AI.isIndirect(), CGF);
@@ -6160,7 +6182,8 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
   case llvm::Triple::mips64el:
     return *(TheTargetCodeGenInfo = new MIPSTargetCodeGenInfo(Types, false));
 
-  case llvm::Triple::arm64: {
+  case llvm::Triple::arm64:
+  case llvm::Triple::arm64_be: {
     ARM64ABIInfo::ABIKind Kind = ARM64ABIInfo::AAPCS;
     if (strcmp(getTarget().getABI(), "darwinpcs") == 0)
       Kind = ARM64ABIInfo::DarwinPCS;

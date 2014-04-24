@@ -12,8 +12,6 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "format-formatter"
-
 #include "BreakableToken.h"
 #include "ContinuationIndenter.h"
 #include "WhitespaceManager.h"
@@ -22,6 +20,8 @@
 #include "clang/Format/Format.h"
 #include "llvm/Support/Debug.h"
 #include <string>
+
+#define DEBUG_TYPE "format-formatter"
 
 namespace clang {
 namespace format {
@@ -301,7 +301,9 @@ void ContinuationIndenter::addTokenOnCurrentLine(LineState &State, bool DryRun,
   else if ((Previous.Type == TT_BinaryOperator ||
             Previous.Type == TT_ConditionalExpr ||
             Previous.Type == TT_CtorInitializerColon) &&
-           (Previous.getPrecedence() != prec::Assignment ||
+           ((Previous.getPrecedence() != prec::Assignment &&
+             (Previous.isNot(tok::lessless) || Previous.OperatorIndex != 0 ||
+              !Previous.LastOperator)) ||
             Current.StartsBinaryExpression))
     // Always indent relative to the RHS of the expression unless this is a
     // simple assignment without binary expression on the RHS. Also indent
@@ -573,7 +575,7 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
         std::min(State.LowestLevelOnLine, State.ParenLevel);
   if (Current.isMemberAccess())
     State.Stack.back().StartOfFunctionCall =
-        Current.LastInChainOfCalls ? 0 : State.Column + Current.ColumnWidth;
+        Current.LastOperator ? 0 : State.Column + Current.ColumnWidth;
   if (Current.Type == TT_ObjCSelectorName)
     State.Stack.back().ObjCSelectorNameFound = true;
   if (Current.Type == TT_LambdaLSquare)
@@ -723,6 +725,7 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
       AvoidBinPacking = Current.BlockKind == BK_Block ||
                         Current.Type == TT_ArrayInitializerLSquare ||
                         Current.Type == TT_DictLiteral ||
+                        !Style.BinPackParameters ||
                         (NextNoComment &&
                          NextNoComment->Type == TT_DesignatedInitializerPeriod);
     } else {

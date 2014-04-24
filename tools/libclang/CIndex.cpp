@@ -1954,6 +1954,10 @@ void OMPClauseEnqueue::VisitOMPFirstprivateClause(
 void OMPClauseEnqueue::VisitOMPSharedClause(const OMPSharedClause *C) {
   VisitOMPClauseList(C);
 }
+void OMPClauseEnqueue::VisitOMPLinearClause(const OMPLinearClause *C) {
+  VisitOMPClauseList(C);
+  Visitor->AddStmt(C->getStep());
+}
 void OMPClauseEnqueue::VisitOMPCopyinClause(const OMPCopyinClause *C) {
   VisitOMPClauseList(C);
 }
@@ -6716,7 +6720,7 @@ void cxindex::printDiagsToStderr(ASTUnit *Unit) {
   for (ASTUnit::stored_diag_iterator D = Unit->stored_diag_begin(), 
                                   DEnd = Unit->stored_diag_end();
        D != DEnd; ++D) {
-    CXStoredDiagnostic Diag(*D, Unit->getASTContext().getLangOpts());
+    CXStoredDiagnostic Diag(*D, Unit->getLangOpts());
     CXString Msg = clang_formatDiagnostic(&Diag,
                                 clang_defaultDiagnosticDisplayOptions());
     fprintf(stderr, "%s\n", clang_getCString(Msg));

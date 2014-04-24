@@ -365,6 +365,7 @@ ModuleMap::findModuleForHeader(const FileEntry *File,
             llvm::sys::path::stem(SkippedDirs[I-1]->getName()), NameBuf);
         Result = findOrCreateModule(Name, Result, UmbrellaModule->ModuleMap,
                                     /*IsFramework=*/false, Explicit).first;
+        Result->IsInferred = true;
 
         // Associate the module and the directory.
         UmbrellaDirs[SkippedDirs[I-1]] = Result;
@@ -381,6 +382,7 @@ ModuleMap::findModuleForHeader(const FileEntry *File,
                          llvm::sys::path::stem(File->getName()), NameBuf);
       Result = findOrCreateModule(Name, Result, UmbrellaModule->ModuleMap,
                                   /*IsFramework=*/false, Explicit).first;
+      Result->IsInferred = true;
       Result->addTopHeader(File);
 
       // If inferred submodules export everything they import, add a
@@ -411,8 +413,9 @@ bool ModuleMap::isHeaderInUnavailableModule(const FileEntry *Header) const {
   return isHeaderUnavailableInModule(Header, 0);
 }
 
-bool ModuleMap::isHeaderUnavailableInModule(const FileEntry *Header,
-                                            Module *RequestingModule) const {
+bool
+ModuleMap::isHeaderUnavailableInModule(const FileEntry *Header,
+                                       const Module *RequestingModule) const {
   HeadersMap::const_iterator Known = Headers.find(Header);
   if (Known != Headers.end()) {
     for (SmallVectorImpl<KnownHeader>::const_iterator
@@ -1476,6 +1479,15 @@ void ModuleMapParser::parseModuleDecl() {
     inferFrameworkLink(ActiveModule, Directory, SourceMgr.getFileManager());
   }
 
+  // If the module meets all requirements but is still unavailable, mark the
+  // whole tree as unavailable to prevent it from building.
+  if (!ActiveModule->IsAvailable && !ActiveModule->IsMissingRequirement &&
+      ActiveModule->Parent) {
+    ActiveModule->getTopLevelModule()->markUnavailable();
+    ActiveModule->getTopLevelModule()->MissingHeaders.append(
+      ActiveModule->MissingHeaders.begin(), ActiveModule->MissingHeaders.end());
+  }
+
   // We're done parsing this module. Pop back to the previous module.
   ActiveModule = PreviousActiveModule;
 }
@@ -1704,9 +1716,8 @@ void ModuleMapParser::parseHeaderDecl(MMToken::TokenKind LeadingToken,
 
     // If we find a module that has a missing header, we mark this module as
     // unavailable and store the header directive for displaying diagnostics.
-    // Other submodules in the same module can still be used.
     Header.IsUmbrella = LeadingToken == MMToken::UmbrellaKeyword;
-    ActiveModule->IsAvailable = false;
+    ActiveModule->markUnavailable();
     ActiveModule->MissingHeaders.push_back(Header);
   }
 }
@@ -1979,7 +1990,8 @@ void ModuleMapParser::parseInferredModuleDecl(bool Framework, bool Explicit) {
 
   if (ActiveModule) {
     // Inferred modules must have umbrella directories.
-    if (!Failed && !ActiveModule->getUmbrellaDir()) {
+    if (!Failed && ActiveModule->IsAvailable &&
+        !ActiveModule->getUmbrellaDir()) {
       Diags.Report(StarLoc, diag::err_mmap_inferred_no_umbrella);
       Failed = true;
     }

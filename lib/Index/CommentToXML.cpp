@@ -563,6 +563,7 @@ public:
 
   // Helpers.
   void appendToResultWithXMLEscaping(StringRef S);
+  void appendToResultWithCDATAEscaping(StringRef S);
 
   void formatTextOfDeclaration(const DeclInfo *DI,
                                SmallString<128> &Declaration);
@@ -667,14 +668,27 @@ void CommentASTToXMLConverter::visitInlineCommandComment(
 
 void CommentASTToXMLConverter::visitHTMLStartTagComment(
     const HTMLStartTagComment *C) {
-  Result << "<rawHTML><![CDATA[";
-  printHTMLStartTagComment(C, Result);
-  Result << "]]></rawHTML>";
+  Result << "<rawHTML";
+  if (C->isSafeToPassThrough())
+    Result << " isSafeToPassThrough=\"1\"";
+  Result << ">";
+  {
+    SmallString<32> Tag;
+    {
+      llvm::raw_svector_ostream TagOS(Tag);
+      printHTMLStartTagComment(C, TagOS);
+    }
+    appendToResultWithCDATAEscaping(Tag);
+  }
+  Result << "</rawHTML>";
 }
 
 void
 CommentASTToXMLConverter::visitHTMLEndTagComment(const HTMLEndTagComment *C) {
-  Result << "<rawHTML>&lt;/" << C->getTagName() << "&gt;</rawHTML>";
+  Result << "<rawHTML";
+  if (C->isSafeToPassThrough())
+    Result << " isSafeToPassThrough=\"1\"";
+  Result << ">&lt;/" << C->getTagName() << "&gt;</rawHTML>";
 }
 
 void
@@ -1098,6 +1112,32 @@ void CommentASTToXMLConverter::appendToResultWithXMLEscaping(StringRef S) {
       break;
     }
   }
+}
+
+void CommentASTToXMLConverter::appendToResultWithCDATAEscaping(StringRef S) {
+  if (S.empty())
+    return;
+
+  Result << "<![CDATA[";
+  while (!S.empty()) {
+    size_t Pos = S.find("]]>");
+    if (Pos == 0) {
+      Result << "]]]]><![CDATA[>";
+      S = S.drop_front(3);
+      continue;
+    }
+    if (Pos == StringRef::npos)
+      Pos = S.size();
+
+    Result << S.substr(0, Pos);
+
+    S = S.drop_front(Pos);
+  }
+  Result << "]]>";
+}
+
+CommentToXMLConverter::~CommentToXMLConverter() {
+  delete FormatContext;
 }
 
 void CommentToXMLConverter::convertCommentToHTML(const FullComment *FC,

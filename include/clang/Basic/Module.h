@@ -123,8 +123,13 @@ public:
   /// will be false to indicate that this (sub)module is not available.
   SmallVector<Requirement, 2> Requirements;
 
-  /// \brief Whether this module is available in the current
-  /// translation unit.
+  /// \brief Whether this module is missing a feature from \c Requirements.
+  unsigned IsMissingRequirement : 1;
+
+  /// \brief Whether this module is available in the current translation unit.
+  ///
+  /// If the module is missing headers or does not meet all requirements then
+  /// this bit will be 0.
   unsigned IsAvailable : 1;
 
   /// \brief Whether this module was loaded from a module file.
@@ -144,6 +149,9 @@ public:
   /// headers in it within an 'extern "C"' block, and allows the module to be
   /// imported within such a block).
   unsigned IsExternC : 1;
+
+  /// \brief Whether this is an inferred submodule (module * { ... }).
+  unsigned IsInferred : 1;
 
   /// \brief Whether we should infer submodules for this module based on 
   /// the headers.
@@ -307,7 +315,7 @@ public:
   
   /// \brief Determine whether this module is a submodule of the given other
   /// module.
-  bool isSubModuleOf(Module *Other) const;
+  bool isSubModuleOf(const Module *Other) const;
   
   /// \brief Determine whether this module is a part of a framework,
   /// either because it is a framework module or because it is a submodule
@@ -406,6 +414,9 @@ public:
   void addRequirement(StringRef Feature, bool RequiredState,
                       const LangOptions &LangOpts,
                       const TargetInfo &Target);
+
+  /// \brief Mark this module and all of its submodules as unavailable.
+  void markUnavailable(bool MissingRequirement = false);
 
   /// \brief Find the submodule with the given name.
   ///

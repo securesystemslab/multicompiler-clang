@@ -80,7 +80,7 @@ public:
   SimpleArray(T *Dat, size_t Cp, size_t Sz = 0)
       : Data(Dat), Size(Sz), Capacity(Cp) {}
   SimpleArray(MemRegionRef A, size_t Cp)
-      : Data(A.allocateT<T>(Cp)), Size(0), Capacity(Cp) {}
+      : Data(Cp == 0 ? nullptr : A.allocateT<T>(Cp)), Size(0), Capacity(Cp) {}
   SimpleArray(SimpleArray<T> &&A)
       : Data(A.Data), Size(A.Size), Capacity(A.Capacity) {
     A.Data = nullptr;
@@ -88,11 +88,26 @@ public:
     A.Capacity = 0;
   }
 
-  T *resize(size_t Ncp, MemRegionRef A) {
+  SimpleArray &operator=(SimpleArray &&RHS) {
+    if (this != &RHS) {
+      Data = RHS.Data;
+      Size = RHS.Size;
+      Capacity = RHS.Capacity;
+
+      RHS.Data = nullptr;
+      RHS.Size = RHS.Capacity = 0;
+    }
+    return *this;
+  }
+
+  void reserve(size_t Ncp, MemRegionRef A) {
+    if (Ncp < Capacity)
+      return;
     T *Odata = Data;
     Data = A.allocateT<T>(Ncp);
+    Capacity = Ncp;
     memcpy(Data, Odata, sizeof(T) * Size);
-    return Odata;
+    return;
   }
 
   typedef T *iterator;
@@ -122,7 +137,7 @@ public:
   }
 
   void setValues(unsigned Sz, const T& C) {
-    assert(Sz < Capacity);
+    assert(Sz <= Capacity);
     Size = Sz;
     for (unsigned i = 0; i < Sz; ++i) {
       Data[i] = C;
@@ -139,7 +154,7 @@ public:
   }
 
 private:
-  SimpleArray(const SimpleArray<T> &A) { }
+  SimpleArray(const SimpleArray<T> &A) LLVM_DELETED_FUNCTION;
 
   T *Data;
   size_t Size;
@@ -157,7 +172,6 @@ private:
 // The init(), destroy(), and makeWritable() methods will change state.
 template<typename T>
 class CopyOnWriteVector {
-private:
   class VectorData {
   public:
     VectorData() : NumRefs(1) { }
@@ -167,17 +181,20 @@ private:
     std::vector<T> Vect;
   };
 
-public:
-  CopyOnWriteVector() : Data(0) {}
+  // No copy constructor or copy assignment.  Use clone() with move assignment.
   CopyOnWriteVector(const CopyOnWriteVector &V) LLVM_DELETED_FUNCTION;
-  CopyOnWriteVector(CopyOnWriteVector &&V) : Data(V.Data) { V.Data = 0; }
+  void operator=(const CopyOnWriteVector &V) LLVM_DELETED_FUNCTION;
+
+public:
+  CopyOnWriteVector() : Data(nullptr) {}
+  CopyOnWriteVector(CopyOnWriteVector &&V) : Data(V.Data) { V.Data = nullptr; }
   ~CopyOnWriteVector() { destroy(); }
 
   // Returns true if this holds a valid vector.
-  bool valid()  { return Data; }
+  bool valid() const  { return Data; }
 
   // Returns true if this vector is writable.
-  bool writable() { return Data && Data->NumRefs == 1; }
+  bool writable() const { return Data && Data->NumRefs == 1; }
 
   // If this vector is not valid, initialize it to a valid vector.
   void init() {
@@ -194,7 +211,7 @@ public:
       delete Data;
     else
       --Data->NumRefs;
-    Data = 0;
+    Data = nullptr;
   }
 
   // Make this vector writable, creating a copy if needed.
@@ -212,28 +229,26 @@ public:
   // Create a lazy copy of this vector.
   CopyOnWriteVector clone() { return CopyOnWriteVector(Data); }
 
-  // No copy constructor or copy assignment.  Use clone() with move assignment.
-  void operator=(const CopyOnWriteVector &V) LLVM_DELETED_FUNCTION;
-
-  void operator=(CopyOnWriteVector &&V) {
+  CopyOnWriteVector &operator=(CopyOnWriteVector &&V) {
     destroy();
     Data = V.Data;
-    V.Data = 0;
+    V.Data = nullptr;
+    return *this;
   }
 
-  typedef typename std::vector<T>::const_iterator iterator;
+  typedef typename std::vector<T>::const_iterator const_iterator;
 
   const std::vector<T> &elements() const { return Data->Vect; }
 
-  iterator begin() const { return elements().cbegin(); }
-  iterator end()   const { return elements().cend();   }
+  const_iterator begin() const { return elements().cbegin(); }
+  const_iterator end() const { return elements().cend(); }
 
   const T& operator[](unsigned i) const { return elements()[i]; }
 
   unsigned size() const { return Data ? elements().size() : 0; }
 
   // Return true if V and this vector refer to the same data.
-  bool sameAs(const CopyOnWriteVector& V) { return Data == V.Data; }
+  bool sameAs(const CopyOnWriteVector &V) const { return Data == V.Data; }
 
   // Clear vector.  The vector must be writable.
   void clear() {
@@ -242,7 +257,7 @@ public:
   }
 
   // Push a new element onto the end.  The vector must be writable.
-  void push_back(const T& Elem) {
+  void push_back(const T &Elem) {
     assert(writable() && "Vector is not writable!");
     Data->Vect.push_back(Elem);
   }

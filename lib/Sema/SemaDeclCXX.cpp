@@ -1175,10 +1175,12 @@ bool Sema::CheckConstexprFunctionBody(const FunctionDecl *Dcl, Stmt *Body) {
   } else {
     if (ReturnStmts.empty()) {
       // C++1y doesn't require constexpr functions to contain a 'return'
-      // statement. We still do, unless the return type is void, because
+      // statement. We still do, unless the return type might be void, because
       // otherwise if there's no return statement, the function cannot
       // be used in a core constant expression.
-      bool OK = getLangOpts().CPlusPlus1y && Dcl->getReturnType()->isVoidType();
+      bool OK = getLangOpts().CPlusPlus1y &&
+                (Dcl->getReturnType()->isVoidType() ||
+                 Dcl->getReturnType()->isDependentType());
       Diag(Dcl->getLocation(),
            OK ? diag::warn_cxx11_compat_constexpr_body_no_return
               : diag::err_constexpr_body_no_return);
@@ -2603,7 +2605,7 @@ Sema::BuildMemInitializer(Decl *ConstructorD,
       MemInitializerValidatorCCC Validator(ClassDecl);
       if (R.empty() && BaseType.isNull() &&
           (Corr = CorrectTypo(R.getLookupNameInfo(), R.getLookupKind(), S, &SS,
-                              Validator, ClassDecl))) {
+                              Validator, CTK_ErrorRecovery, ClassDecl))) {
         if (FieldDecl *Member = Corr.getCorrectionDeclAs<FieldDecl>()) {
           // We have found a non-static data member with a similar
           // name to what was typed; complain and initialize that
@@ -3440,7 +3442,8 @@ static bool CollectFieldInitializer(Sema &SemaRef, BaseAndFieldInfo &Info,
     return false;
 
   // Overwhelmingly common case: we have a direct initializer for this field.
-  if (CXXCtorInitializer *Init = Info.AllBaseFields.lookup(Field))
+  if (CXXCtorInitializer *Init =
+          Info.AllBaseFields.lookup(Field->getCanonicalDecl()))
     return Info.addFieldInitializer(Init);
 
   // C++11 [class.base.init]p8:
@@ -3553,7 +3556,7 @@ bool Sema::SetCtorInitializers(CXXConstructorDecl *Constructor, bool AnyErrors,
     if (Member->isBaseInitializer())
       Info.AllBaseFields[Member->getBaseClass()->getAs<RecordType>()] = Member;
     else {
-      Info.AllBaseFields[Member->getAnyMember()] = Member;
+      Info.AllBaseFields[Member->getAnyMember()->getCanonicalDecl()] = Member;
 
       if (IndirectFieldDecl *F = Member->getIndirectMember()) {
         for (auto *C : F->chain()) {
@@ -3701,7 +3704,7 @@ static void PopulateKeysForFields(FieldDecl *Field, SmallVectorImpl<const void*>
       return;
     }
   }
-  IdealInits.push_back(Field);
+  IdealInits.push_back(Field->getCanonicalDecl());
 }
 
 static const void *GetKeyForBase(ASTContext &Context, QualType BaseType) {
@@ -3713,7 +3716,7 @@ static const void *GetKeyForMember(ASTContext &Context,
   if (!Member->isAnyMemberInitializer())
     return GetKeyForBase(Context, QualType(Member->getBaseClass(), 0));
     
-  return Member->getAnyMember();
+  return Member->getAnyMember()->getCanonicalDecl();
 }
 
 static void DiagnoseBaseOrMemInitializerOrder(
@@ -3908,13 +3911,12 @@ void Sema::ActOnMemInitializers(Decl *ConstructorDecl,
     Init->setSourceOrder(i);
 
     if (Init->isAnyMemberInitializer()) {
-      FieldDecl *Field = Init->getAnyMember();
-      if (CheckRedundantInit(*this, Init, Members[Field]) ||
+      const void *Key = GetKeyForMember(Context, Init);
+      if (CheckRedundantInit(*this, Init, Members[Key]) ||
           CheckRedundantUnionInit(*this, Init, MemberUnions))
         HadError = true;
     } else if (Init->isBaseInitializer()) {
-      const void *Key =
-          GetKeyForBase(Context, QualType(Init->getBaseClass(), 0));
+      const void *Key = GetKeyForMember(Context, Init);
       if (CheckRedundantInit(*this, Init, Members[Key]))
         HadError = true;
     } else {
@@ -6898,7 +6900,8 @@ static bool TryNamespaceTypoCorrection(Sema &S, LookupResult &R, Scope *Sc,
   R.clear();
   if (TypoCorrection Corrected = S.CorrectTypo(R.getLookupNameInfo(),
                                                R.getLookupKind(), Sc, &SS,
-                                               Validator)) {
+                                               Validator,
+                                               Sema::CTK_ErrorRecovery)) {
     if (DeclContext *DC = S.computeDeclContext(SS, false)) {
       std::string CorrectedStr(Corrected.getAsString(S.getLangOpts()));
       bool DroppedSpecifier = Corrected.WillReplaceSpecifier() &&
@@ -7469,7 +7472,8 @@ NamedDecl *Sema::BuildUsingDeclaration(Scope *S, AccessSpecifier AS,
     UsingValidatorCCC CCC(HasTypenameKeyword, IsInstantiation,
                           CurContext->isRecord());
     if (TypoCorrection Corrected = CorrectTypo(R.getLookupNameInfo(),
-                                               R.getLookupKind(), S, &SS, CCC)){
+                                               R.getLookupKind(), S, &SS, CCC,
+                                               CTK_ErrorRecovery)){
       // We reject any correction for which ND would be NULL.
       NamedDecl *ND = Corrected.getCorrectionDecl();
       R.setLookupName(Corrected.getCorrection());
@@ -11370,7 +11374,7 @@ Decl *Sema::ActOnTemplatedFriendTag(Scope *S, SourceLocation FriendLoc,
 
   if (TemplateParameterList *TemplateParams =
           MatchTemplateParametersToScopeSpecifier(
-              TagLoc, NameLoc, SS, TempParamLists, /*friend*/ true,
+              TagLoc, NameLoc, SS, 0, TempParamLists, /*friend*/ true,
               isExplicitSpecialization, Invalid)) {
     if (TemplateParams->size() > 0) {
       // This is a declaration of a class template.

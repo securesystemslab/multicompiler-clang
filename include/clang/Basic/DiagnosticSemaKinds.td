@@ -2319,7 +2319,7 @@ def warn_impcast_float_precision : Warning<
   InGroup<Conversion>, DefaultIgnore;
 def warn_impcast_float_integer : Warning<
   "implicit conversion turns floating-point number into integer: %0 to %1">,
-  InGroup<Conversion>, DefaultIgnore;
+  InGroup<FloatConversion>, DefaultIgnore;
 def warn_impcast_integer_sign : Warning<
   "implicit conversion changes signedness: %0 to %1">,
   InGroup<SignConversion>, DefaultIgnore;
@@ -2551,6 +2551,8 @@ def warn_objc_invalid_bridge : Warning<
   "%0 bridges to %1, not %2">, InGroup<ObjCBridge>;
 def warn_objc_invalid_bridge_to_cf : Warning<
   "%0 cannot bridge to %1">, InGroup<ObjCBridge>;
+def err_objc_invalid_bridge : Error<
+  "under ARC %0 bridges to %1, but it still requires an explicit bridge cast">;
 
 // objc_bridge_related attribute diagnostics.
 def err_objc_bridged_related_invalid_class : Error<
@@ -3267,8 +3269,8 @@ def err_template_qualified_declarator_no_match : Error<
   "nested name specifier '%0' for declaration does not refer into a class, "
   "class template or class template partial specialization">;
 def err_specialize_member_of_template : Error<
-  "cannot specialize (with 'template<>') a member of an unspecialized "
-  "template">;
+  "cannot specialize %select{|(with 'template<>') }0a member of an "
+  "unspecialized template">;
 
 // C++ Class Template Partial Specialization
 def err_default_arg_in_partial_spec : Error<
@@ -4638,7 +4640,7 @@ def warn_deprecated_string_literal_conversion : Warning<
   InGroup<CXX11CompatDeprecatedWritableStr>;
 def ext_deprecated_string_literal_conversion : ExtWarn<
   "ISO C++11 does not allow conversion from string literal to %0">,
-  InGroup<CXX11CompatDeprecatedWritableStr>, SFINAEFailure;
+  InGroup<WritableStrings>, SFINAEFailure;
 def err_realimag_invalid_type : Error<"invalid type %0 to %1 operator">;
 def err_typecheck_sclass_fscope : Error<
   "illegal storage class on file-scoped variable">;
@@ -6928,6 +6930,16 @@ def err_omp_ambiguous_conversion : Error<
   "enumeration type">;
 def err_omp_required_access : Error<
   "%0 variable must be %1">;
+def err_omp_const_variable : Error<
+  "const-qualified variable cannot be %0">;
+def err_omp_linear_incomplete_type : Error<
+  "a linear variable with incomplete type %0">;
+def err_omp_linear_expected_int_or_ptr : Error<
+  "argument of a linear clause should be of integral or pointer "
+  "type, not %0">;
+def warn_omp_linear_step_zero : Warning<
+  "zero linear step (%0 %select{|and other variables in clause }1should probably be const)">,
+  InGroup<OpenMPClauses>;
 } // end of OpenMP category
 
 let CategoryName = "Related Result Type Issue" in {

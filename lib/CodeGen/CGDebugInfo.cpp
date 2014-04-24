@@ -1356,14 +1356,11 @@ CollectFunctionTemplateParams(const FunctionDecl *FD, llvm::DIFile Unit) {
 llvm::DIArray CGDebugInfo::
 CollectCXXTemplateParams(const ClassTemplateSpecializationDecl *TSpecial,
                          llvm::DIFile Unit) {
-  llvm::PointerUnion<ClassTemplateDecl *,
-                     ClassTemplatePartialSpecializationDecl *>
-    PU = TSpecial->getSpecializedTemplateOrPartial();
-
-  TemplateParameterList *TPList = PU.is<ClassTemplateDecl *>() ?
-    PU.get<ClassTemplateDecl *>()->getTemplateParameters() :
-    PU.get<ClassTemplatePartialSpecializationDecl *>()->getTemplateParameters();
-  const TemplateArgumentList &TAList = TSpecial->getTemplateInstantiationArgs();
+  // Always get the full list of parameters, not just the ones from
+  // the specialization.
+  TemplateParameterList *TPList =
+    TSpecial->getSpecializedTemplate()->getTemplateParameters();
+  const TemplateArgumentList &TAList = TSpecial->getTemplateArgs();
   return CollectTemplateParams(TPList, TAList.asArray(), Unit);
 }
 
@@ -2910,7 +2907,6 @@ llvm::DIType CGDebugInfo::CreateSelfType(const QualType &QualTy,
                                          llvm::DIType Ty) {
   llvm::DIType CachedTy = getTypeOrNull(QualTy);
   if (CachedTy) Ty = CachedTy;
-  else DEBUG(llvm::dbgs() << "No cached type for self.");
   return DBuilder.createObjectPointerType(Ty);
 }
 

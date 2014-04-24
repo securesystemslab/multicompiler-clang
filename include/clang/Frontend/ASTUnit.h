@@ -501,6 +501,11 @@ public:
     assert(TheSema && "ASTUnit does not have a Sema object!");
     return *TheSema;
   }
+
+  const LangOptions &getLangOpts() const {
+    assert(LangOpts && " ASTUnit does not have language options");
+    return *LangOpts;
+  }
   
   const FileManager &getFileManager() const { return *FileMgr; }
         FileManager &getFileManager()       { return *FileMgr; }
@@ -869,6 +874,10 @@ public:
   void makeModuleVisible(Module *Mod, Module::NameVisibilityKind Visibility,
                          SourceLocation ImportLoc, bool Complain) override {}
 
+  GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
+    { return 0; }
+  bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
+    { return 0; };
 };
 
 } // namespace clang

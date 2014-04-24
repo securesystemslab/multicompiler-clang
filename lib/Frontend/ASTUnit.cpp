@@ -1714,14 +1714,20 @@ void ASTUnit::RealizeTopLevelDeclsFromPreamble() {
 }
 
 void ASTUnit::transferASTDataFromCompilerInstance(CompilerInstance &CI) {
-  // Steal the created target, context, and preprocessor.
+  // Steal the created target, context, and preprocessor if they have been
+  // created.
+  assert(CI.hasInvocation() && "missing invocation");
+  LangOpts = CI.getInvocation().getLangOpts();
   TheSema.reset(CI.takeSema());
   Consumer.reset(CI.takeASTConsumer());
-  Ctx = &CI.getASTContext();
-  PP = &CI.getPreprocessor();
+  if (CI.hasASTContext())
+    Ctx = &CI.getASTContext();
+  if (CI.hasPreprocessor())
+    PP = &CI.getPreprocessor();
   CI.setSourceManager(0);
   CI.setFileManager(0);
-  Target = &CI.getTarget();
+  if (CI.hasTarget())
+    Target = &CI.getTarget();
   Reader = CI.getModuleManager();
   HadModuleLoaderFatalFailure = CI.hadModuleLoaderFatalFailure();
 }

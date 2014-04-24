@@ -523,6 +523,17 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
 
   Opts.DependentLibraries = Args.getAllArgValues(OPT_dependent_lib);
 
+  if (Arg *A = Args.getLastArg(OPT_Rpass_EQ)) {
+    StringRef Val = A->getValue();
+    std::string RegexError;
+    Opts.OptimizationRemarkPattern = std::make_shared<llvm::Regex>(Val);
+    if (!Opts.OptimizationRemarkPattern->isValid(RegexError)) {
+      Diags.Report(diag::err_drv_optimization_remark_pattern)
+          << RegexError << A->getAsString(Args);
+      Opts.OptimizationRemarkPattern.reset();
+    }
+  }
+
   return Success;
 }
 
@@ -1349,6 +1360,9 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.ModulesStrictDeclUse = Args.hasArg(OPT_fmodules_strict_decluse);
   Opts.ModulesDeclUse =
       Args.hasArg(OPT_fmodules_decluse) || Opts.ModulesStrictDeclUse;
+  Opts.ModulesSearchAll = Opts.Modules &&
+    !Args.hasArg(OPT_fno_modules_search_all) &&
+    Args.hasArg(OPT_fmodules_search_all);
   Opts.CharIsSigned = Opts.OpenCL || !Args.hasArg(OPT_fno_signed_char);
   Opts.WChar = Opts.CPlusPlus && !Args.hasArg(OPT_fno_wchar);
   Opts.ShortWChar = Args.hasFlag(OPT_fshort_wchar, OPT_fno_short_wchar, false);
