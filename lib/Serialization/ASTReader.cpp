@@ -22,6 +22,7 @@
 #include "clang/AST/NestedNameSpecifier.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/TypeLocVisitor.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Basic/SourceManagerInternals.h"
@@ -29,6 +30,7 @@
 #include "clang/Basic/TargetOptions.h"
 #include "clang/Basic/Version.h"
 #include "clang/Basic/VersionTuple.h"
+#include "clang/Frontend/Utils.h"
 #include "clang/Lex/HeaderSearch.h"
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/MacroInfo.h"
@@ -90,7 +92,7 @@ ChainedASTReaderListener::ReadTargetOptions(const TargetOptions &TargetOpts,
          Second->ReadTargetOptions(TargetOpts, Complain);
 }
 bool ChainedASTReaderListener::ReadDiagnosticOptions(
-    const DiagnosticOptions &DiagOpts, bool Complain) {
+    IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts, bool Complain) {
   return First->ReadDiagnosticOptions(DiagOpts, Complain) ||
          Second->ReadDiagnosticOptions(DiagOpts, Complain);
 }
@@ -218,7 +220,6 @@ static bool checkTargetOptions(const TargetOptions &TargetOpts,
   CHECK_TARGET_OPT(Triple, "target");
   CHECK_TARGET_OPT(CPU, "target CPU");
   CHECK_TARGET_OPT(ABI, "target ABI");
-  CHECK_TARGET_OPT(LinkerVersion, "target linker version");
 #undef CHECK_TARGET_OPT
 
   // Compare feature sets.
@@ -289,6 +290,120 @@ namespace {
     MacroDefinitionsMap;
   typedef llvm::DenseMap<DeclarationName, SmallVector<NamedDecl *, 8> >
     DeclsMap;
+}
+
+static bool checkDiagnosticGroupMappings(DiagnosticsEngine &StoredDiags,
+                                         DiagnosticsEngine &Diags,
+                                         bool Complain) {
+  typedef DiagnosticsEngine::Level Level;
+
+  // Check current mappings for new -Werror mappings, and the stored mappings
+  // for cases that were explicitly mapped to *not* be errors that are now
+  // errors because of options like -Werror.
+  DiagnosticsEngine *MappingSources[] = { &Diags, &StoredDiags };
+
+  for (DiagnosticsEngine *MappingSource : MappingSources) {
+    for (auto DiagIDMappingPair : MappingSource->getDiagnosticMappings()) {
+      diag::kind DiagID = DiagIDMappingPair.first;
+      Level CurLevel = Diags.getDiagnosticLevel(DiagID, SourceLocation());
+      if (CurLevel < DiagnosticsEngine::Error)
+        continue; // not significant
+      Level StoredLevel =
+          StoredDiags.getDiagnosticLevel(DiagID, SourceLocation());
+      if (StoredLevel < DiagnosticsEngine::Error) {
+        if (Complain)
+          Diags.Report(diag::err_pch_diagopt_mismatch) << "-Werror=" +
+              Diags.getDiagnosticIDs()->getWarningOptionForDiag(DiagID).str();
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+static DiagnosticsEngine::ExtensionHandling
+isExtHandlingFromDiagsError(DiagnosticsEngine &Diags) {
+  DiagnosticsEngine::ExtensionHandling Ext =
+      Diags.getExtensionHandlingBehavior();
+  if (Ext == DiagnosticsEngine::Ext_Warn && Diags.getWarningsAsErrors())
+    Ext = DiagnosticsEngine::Ext_Error;
+  return Ext;
+}
+
+static bool checkDiagnosticMappings(DiagnosticsEngine &StoredDiags,
+                                    DiagnosticsEngine &Diags,
+                                    bool IsSystem, bool Complain) {
+  // Top-level options
+  if (IsSystem) {
+    if (Diags.getSuppressSystemWarnings())
+      return false;
+    // If -Wsystem-headers was not enabled before, be conservative
+    if (StoredDiags.getSuppressSystemWarnings()) {
+      if (Complain)
+        Diags.Report(diag::err_pch_diagopt_mismatch) << "-Wsystem-headers";
+      return true;
+    }
+  }
+
+  if (Diags.getWarningsAsErrors() && !StoredDiags.getWarningsAsErrors()) {
+    if (Complain)
+      Diags.Report(diag::err_pch_diagopt_mismatch) << "-Werror";
+    return true;
+  }
+
+  if (Diags.getWarningsAsErrors() && Diags.getEnableAllWarnings() &&
+      !StoredDiags.getEnableAllWarnings()) {
+    if (Complain)
+      Diags.Report(diag::err_pch_diagopt_mismatch) << "-Weverything -Werror";
+    return true;
+  }
+
+  if (isExtHandlingFromDiagsError(Diags) &&
+      !isExtHandlingFromDiagsError(StoredDiags)) {
+    if (Complain)
+      Diags.Report(diag::err_pch_diagopt_mismatch) << "-pedantic-errors";
+    return true;
+  }
+
+  return checkDiagnosticGroupMappings(StoredDiags, Diags, Complain);
+}
+
+bool PCHValidator::ReadDiagnosticOptions(
+    IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts, bool Complain) {
+  DiagnosticsEngine &ExistingDiags = PP.getDiagnostics();
+  IntrusiveRefCntPtr<DiagnosticIDs> DiagIDs(ExistingDiags.getDiagnosticIDs());
+  IntrusiveRefCntPtr<DiagnosticsEngine> Diags(
+      new DiagnosticsEngine(DiagIDs, DiagOpts.getPtr()));
+  // This should never fail, because we would have processed these options
+  // before writing them to an ASTFile.
+  ProcessWarningOptions(*Diags, *DiagOpts, /*Report*/false);
+
+  ModuleManager &ModuleMgr = Reader.getModuleManager();
+  assert(ModuleMgr.size() >= 1 && "what ASTFile is this then");
+
+  // If the original import came from a file explicitly generated by the user,
+  // don't check the diagnostic mappings.
+  // FIXME: currently this is approximated by checking whether this is not a
+  // module import.
+  // Note: ModuleMgr.rbegin() may not be the current module, but it must be in
+  // the transitive closure of its imports, since unrelated modules cannot be
+  // imported until after this module finishes validation.
+  ModuleFile *TopImport = *ModuleMgr.rbegin();
+  while (!TopImport->ImportedBy.empty())
+    TopImport = TopImport->ImportedBy[0];
+  if (TopImport->Kind != MK_Module)
+    return false;
+
+  StringRef ModuleName = TopImport->ModuleName;
+  assert(!ModuleName.empty() && "diagnostic options read before module name");
+
+  Module *M = PP.getHeaderSearchInfo().lookupModule(ModuleName);
+  assert(M && "missing module");
+
+  // FIXME: if the diagnostics are incompatible, save a DiagnosticOptions that
+  // contains the union of their flags.
+  return checkDiagnosticMappings(*Diags, ExistingDiags, M->IsSystem, Complain);
 }
 
 /// \brief Collect the macro definitions provided by the given preprocessor
@@ -464,9 +579,10 @@ void PCHValidator::ReadCounter(const ModuleFile &M, unsigned Value) {
 // AST reader implementation
 //===----------------------------------------------------------------------===//
 
-void
-ASTReader::setDeserializationListener(ASTDeserializationListener *Listener) {
+void ASTReader::setDeserializationListener(ASTDeserializationListener *Listener,
+                                           bool TakeOwnership) {
   DeserializationListener = Listener;
+  OwnsDeserializationListener = TakeOwnership;
 }
 
 
@@ -1801,7 +1917,7 @@ ASTReader::removeOverriddenMacros(IdentifierInfo *II,
     AmbiguousMacroDefs.erase(II);
   } else {
     // There's no ambiguity yet. Maybe we're introducing one.
-    llvm::SmallVector<DefMacroDirective*, 1> Ambig;
+    AmbiguousMacros Ambig;
     if (PrevDef)
       Ambig.push_back(PrevDef);
 
@@ -1809,7 +1925,7 @@ ASTReader::removeOverriddenMacros(IdentifierInfo *II,
 
     if (!Ambig.empty()) {
       AmbiguousMacros &Result = AmbiguousMacroDefs[II];
-      Result.swap(Ambig);
+      std::swap(Result, Ambig);
       return &Result;
     }
   }
@@ -1832,9 +1948,8 @@ void ASTReader::installImportedMacro(IdentifierInfo *II, ModuleMacroInfo *MMI,
     assert(ImportLoc.isValid() && "no import location for a visible macro?");
   }
 
-  llvm::SmallVectorImpl<DefMacroDirective*> *Prev =
+  AmbiguousMacros *Prev =
       removeOverriddenMacros(II, MMI->getOverriddenSubmodules());
-
 
   // Create a synthetic macro definition corresponding to the import (or null
   // if this was an undefinition of the macro).
@@ -2268,11 +2383,11 @@ ASTReader::ReadControlBlock(ModuleFile &F,
     }
 
     case DIAGNOSTIC_OPTIONS: {
-      bool Complain = (ClientLoadCapabilities & ARR_ConfigurationMismatch)==0;
+      bool Complain = (ClientLoadCapabilities & ARR_OutOfDate)==0;
       if (Listener && &F == *ModuleMgr.begin() &&
           ParseDiagnosticOptions(Record, Complain, *Listener) &&
-          !DisableValidation && !AllowConfigurationMismatch)
-        return ConfigurationMismatch;
+          !DisableValidation)
+        return OutOfDate;
       break;
     }
 
@@ -3316,6 +3431,9 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
   llvm::SaveAndRestore<SourceLocation>
     SetCurImportLocRAII(CurrentImportLoc, ImportLoc);
 
+  // Defer any pending actions until we get to the end of reading the AST file.
+  Deserializing AnASTFile(this);
+
   // Bump the generation number.
   unsigned PreviousGeneration = CurrentGeneration++;
 
@@ -3627,24 +3745,6 @@ void ASTReader::InitializeContext() {
   if (DeserializationListener)
     DeserializationListener->DeclRead(PREDEF_DECL_TRANSLATION_UNIT_ID, 
                                       Context.getTranslationUnitDecl());
-
-  // For any declarations we have already loaded, load any update records.
-  {
-    // We're not back to a consistent state until all our pending update
-    // records have been loaded. There can be interdependencies between them.
-    Deserializing SomeUpdateRecords(this);
-    ReadingKindTracker ReadingKind(Read_Decl, *this);
-
-    // Make sure we load the declaration update records for the translation
-    // unit, if there are any.
-    // FIXME: Is this necessary any more?
-    loadDeclUpdateRecords(PREDEF_DECL_TRANSLATION_UNIT_ID,
-                          Context.getTranslationUnitDecl());
-
-    for (auto &Update : PendingUpdateRecords)
-      loadDeclUpdateRecords(Update.first, Update.second);
-    PendingUpdateRecords.clear();
-  }
 
   // FIXME: Find a better way to deal with collisions between these
   // built-in types. Right now, we just ignore the problem.
@@ -4468,7 +4568,6 @@ bool ASTReader::ParseTargetOptions(const RecordData &Record,
   TargetOpts.Triple = ReadString(Record, Idx);
   TargetOpts.CPU = ReadString(Record, Idx);
   TargetOpts.ABI = ReadString(Record, Idx);
-  TargetOpts.LinkerVersion = ReadString(Record, Idx);
   for (unsigned N = Record[Idx++]; N; --N) {
     TargetOpts.FeaturesAsWritten.push_back(ReadString(Record, Idx));
   }
@@ -4481,15 +4580,15 @@ bool ASTReader::ParseTargetOptions(const RecordData &Record,
 
 bool ASTReader::ParseDiagnosticOptions(const RecordData &Record, bool Complain,
                                        ASTReaderListener &Listener) {
-  DiagnosticOptions DiagOpts;
+  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts(new DiagnosticOptions);
   unsigned Idx = 0;
-#define DIAGOPT(Name, Bits, Default) DiagOpts.Name = Record[Idx++];
+#define DIAGOPT(Name, Bits, Default) DiagOpts->Name = Record[Idx++];
 #define ENUM_DIAGOPT(Name, Type, Bits, Default) \
-  DiagOpts.set##Name(static_cast<Type>(Record[Idx++]));
+  DiagOpts->set##Name(static_cast<Type>(Record[Idx++]));
 #include "clang/Basic/DiagnosticOptions.def"
 
   for (unsigned N = Record[Idx++]; N; --N) {
-    DiagOpts.Warnings.push_back(ReadString(Record, Idx));
+    DiagOpts->Warnings.push_back(ReadString(Record, Idx));
   }
 
   return Listener.ReadDiagnosticOptions(DiagOpts, Complain);
@@ -5315,8 +5414,14 @@ QualType ASTReader::readTypeRecord(unsigned Index) {
     QualType TST = readType(*Loc.F, Record, Idx); // probably derivable
     // FIXME: ASTContext::getInjectedClassNameType is not currently suitable
     // for AST reading, too much interdependencies.
-    return
-      QualType(new (Context, TypeAlignment) InjectedClassNameType(D, TST), 0);
+    const Type *T;
+    if (const Type *Existing = D->getTypeForDecl())
+      T = Existing;
+    else if (auto *Prev = D->getPreviousDecl())
+      T = Prev->getTypeForDecl();
+    else
+      T = new (Context, TypeAlignment) InjectedClassNameType(D, TST);
+    return QualType(T, 0);
   }
 
   case TYPE_TEMPLATE_TYPE_PARM: {
@@ -7874,7 +7979,7 @@ std::string ASTReader::getOwningModuleNameForDiagnostic(const Decl *D) {
 void ASTReader::finishPendingActions() {
   while (!PendingIdentifierInfos.empty() || !PendingDeclChains.empty() ||
          !PendingMacroIDs.empty() || !PendingDeclContextInfos.empty() ||
-         !PendingOdrMergeChecks.empty()) {
+         !PendingUpdateRecords.empty() || !PendingOdrMergeChecks.empty()) {
     // If any identifiers with corresponding top-level declarations have
     // been loaded, load those declarations now.
     typedef llvm::DenseMap<IdentifierInfo *, SmallVector<Decl *, 2> >
@@ -7936,6 +8041,13 @@ void ASTReader::finishPendingActions() {
       DeclContext *SemaDC = cast<DeclContext>(GetDecl(Info.SemaDC));
       DeclContext *LexicalDC = cast<DeclContext>(GetDecl(Info.LexicalDC));
       Info.D->setDeclContextsImpl(SemaDC, LexicalDC, getContext());
+    }
+
+    // Perform any pending declaration updates.
+    while (!PendingUpdateRecords.empty()) {
+      auto Update = PendingUpdateRecords.pop_back_val();
+      ReadingKindTracker ReadingKind(Read_Decl, *this);
+      loadDeclUpdateRecords(Update.first, Update.second);
     }
 
     // Trigger the import of the full definition of each class that had any
@@ -8150,39 +8262,38 @@ void ASTReader::pushExternalDeclIntoScope(NamedDecl *D, DeclarationName Name) {
   }
 }
 
-ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context,
-                     StringRef isysroot, bool DisableValidation,
-                     bool AllowASTWithCompilerErrors,
-                     bool AllowConfigurationMismatch,
-                     bool ValidateSystemInputs,
+ASTReader::ASTReader(Preprocessor &PP, ASTContext &Context, StringRef isysroot,
+                     bool DisableValidation, bool AllowASTWithCompilerErrors,
+                     bool AllowConfigurationMismatch, bool ValidateSystemInputs,
                      bool UseGlobalIndex)
-  : Listener(new PCHValidator(PP, *this)), DeserializationListener(0),
-    SourceMgr(PP.getSourceManager()), FileMgr(PP.getFileManager()),
-    Diags(PP.getDiagnostics()), SemaObj(0), PP(PP), Context(Context),
-    Consumer(0), ModuleMgr(PP.getFileManager()),
-    isysroot(isysroot), DisableValidation(DisableValidation),
-    AllowASTWithCompilerErrors(AllowASTWithCompilerErrors),
-    AllowConfigurationMismatch(AllowConfigurationMismatch),
-    ValidateSystemInputs(ValidateSystemInputs),
-    UseGlobalIndex(UseGlobalIndex), TriedLoadingGlobalIndex(false),
-    CurrentGeneration(0), CurrSwitchCaseStmts(&SwitchCaseStmts),
-    NumSLocEntriesRead(0), TotalNumSLocEntries(0), 
-    NumStatementsRead(0), TotalNumStatements(0), NumMacrosRead(0),
-    TotalNumMacros(0), NumIdentifierLookups(0), NumIdentifierLookupHits(0),
-    NumSelectorsRead(0), NumMethodPoolEntriesRead(0),
-    NumMethodPoolLookups(0), NumMethodPoolHits(0),
-    NumMethodPoolTableLookups(0), NumMethodPoolTableHits(0),
-    TotalNumMethodPoolEntries(0),
-    NumLexicalDeclContextsRead(0), TotalLexicalDeclContexts(0), 
-    NumVisibleDeclContextsRead(0), TotalVisibleDeclContexts(0),
-    TotalModulesSizeInBits(0), NumCurrentElementsDeserializing(0),
-    PassingDeclsToConsumer(false),
-    NumCXXBaseSpecifiersLoaded(0), ReadingKind(Read_None)
-{
+    : Listener(new PCHValidator(PP, *this)), DeserializationListener(0),
+      OwnsDeserializationListener(false), SourceMgr(PP.getSourceManager()),
+      FileMgr(PP.getFileManager()), Diags(PP.getDiagnostics()), SemaObj(0),
+      PP(PP), Context(Context), Consumer(0), ModuleMgr(PP.getFileManager()),
+      isysroot(isysroot), DisableValidation(DisableValidation),
+      AllowASTWithCompilerErrors(AllowASTWithCompilerErrors),
+      AllowConfigurationMismatch(AllowConfigurationMismatch),
+      ValidateSystemInputs(ValidateSystemInputs),
+      UseGlobalIndex(UseGlobalIndex), TriedLoadingGlobalIndex(false),
+      CurrentGeneration(0), CurrSwitchCaseStmts(&SwitchCaseStmts),
+      NumSLocEntriesRead(0), TotalNumSLocEntries(0), NumStatementsRead(0),
+      TotalNumStatements(0), NumMacrosRead(0), TotalNumMacros(0),
+      NumIdentifierLookups(0), NumIdentifierLookupHits(0), NumSelectorsRead(0),
+      NumMethodPoolEntriesRead(0), NumMethodPoolLookups(0),
+      NumMethodPoolHits(0), NumMethodPoolTableLookups(0),
+      NumMethodPoolTableHits(0), TotalNumMethodPoolEntries(0),
+      NumLexicalDeclContextsRead(0), TotalLexicalDeclContexts(0),
+      NumVisibleDeclContextsRead(0), TotalVisibleDeclContexts(0),
+      TotalModulesSizeInBits(0), NumCurrentElementsDeserializing(0),
+      PassingDeclsToConsumer(false), NumCXXBaseSpecifiersLoaded(0),
+      ReadingKind(Read_None) {
   SourceMgr.setExternalSLocEntrySource(this);
 }
 
 ASTReader::~ASTReader() {
+  if (OwnsDeserializationListener)
+    delete DeserializationListener;
+
   for (DeclContextVisibleUpdatesPending::iterator
            I = PendingVisibleUpdates.begin(),
            E = PendingVisibleUpdates.end();

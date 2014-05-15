@@ -244,7 +244,7 @@ public:
   /// \brief Recursively visit a lambda capture.
   ///
   /// \returns false if the visitation was terminated early, true otherwise.
-  bool TraverseLambdaCapture(LambdaExpr::Capture C);
+  bool TraverseLambdaCapture(LambdaCapture C);
 
   // ---- Methods on Attrs ----
 
@@ -783,8 +783,8 @@ bool DataRecursiveASTVisitor<Derived>::TraverseConstructorInitializer(
   return true;
 }
 
-template<typename Derived>
-bool DataRecursiveASTVisitor<Derived>::TraverseLambdaCapture(LambdaExpr::Capture C){
+template <typename Derived>
+bool DataRecursiveASTVisitor<Derived>::TraverseLambdaCapture(LambdaCapture C) {
   return true;
 }
 
@@ -2376,6 +2376,12 @@ bool DataRecursiveASTVisitor<Derived>::VisitOMPSafelenClause(
 
 template<typename Derived>
 bool DataRecursiveASTVisitor<Derived>::VisitOMPDefaultClause(OMPDefaultClause *C) {
+  return true;
+}
+
+template<typename Derived>
+bool
+DataRecursiveASTVisitor<Derived>::VisitOMPProcBindClause(OMPProcBindClause *C) {
   return true;
 }
 

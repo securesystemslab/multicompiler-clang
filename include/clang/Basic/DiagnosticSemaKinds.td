@@ -234,8 +234,8 @@ def ext_implicit_function_decl : ExtWarn<
   InGroup<ImplicitFunctionDeclare>;
 def note_function_suggestion : Note<"did you mean %0?">;
 
-def err_ellipsis_first_arg : Error<
-  "ISO C requires a named argument before '...'">;
+def err_ellipsis_first_param : Error<
+  "ISO C requires a named parameter before '...'">;
 def err_declarator_need_ident : Error<"declarator requires an identifier">;
 def err_language_linkage_spec_unknown : Error<"unknown linkage language">;
 def err_language_linkage_spec_not_ascii : Error<
@@ -498,8 +498,8 @@ def err_opencl_half_load_store : Error<
 def err_opencl_cast_to_half : Error<"casting to type %0 is not allowed">;
 def err_opencl_half_declaration : Error<
   "declaring variable of type %0 is not allowed">;
-def err_opencl_half_argument : Error<
-  "declaring function argument of type %0 is not allowed; did you forget * ?">;
+def err_opencl_half_param : Error<
+  "declaring function parameter of type %0 is not allowed; did you forget * ?">;
 def err_opencl_half_return : Error<
   "declaring function return value of type %0 is not allowed; did you forget * ?">;
 def warn_enum_value_overflow : Warning<"overflow in enumeration value">;
@@ -2081,6 +2081,9 @@ def err_attribute_weak_static : Error<
   "weak declaration cannot have internal linkage">;
 def err_attribute_selectany_non_extern_data : Error<
   "'selectany' can only be applied to data items with external linkage">;
+def err_declspec_thread_on_thread_variable : Error<
+  "'__declspec(thread)' applied to variable that already has a "
+  "thread-local storage specifier">;
 def err_attribute_dll_not_extern : Error<
   "%q0 must have external linkage when declared %q1">;
 def warn_attribute_invalid_on_definition : Warning<
@@ -2102,6 +2105,9 @@ def err_alias_to_undefined : Error<
   "alias must point to a defined variable or function">;
 def warn_alias_to_weak_alias : Warning<
   "alias will always resolve to %0 even if weak definition of alias %1 is overridden">,
+  InGroup<IgnoredAttributes>;
+def warn_alias_with_section : Warning<
+  "alias will not be in section '%0' but in the same section as the aliasee">,
   InGroup<IgnoredAttributes>;
 def err_duplicate_mangled_name : Error<
   "definition with same mangled name as another definition">;
@@ -2531,10 +2537,10 @@ def warn_objc_designated_init_non_designated_init_call : Warning<
   "designated initializer invoked a non-designated initializer">,
   InGroup<ObjCDesignatedInit>;
 def warn_objc_secondary_init_super_init_call : Warning<
-  "secondary initializer should not invoke an initializer on 'super'">,
+  "convenience initializer should not invoke an initializer on 'super'">,
   InGroup<ObjCDesignatedInit>;
 def warn_objc_secondary_init_missing_init_call : Warning<
-  "secondary initializer missing a 'self' call to another initializer">,
+  "convenience initializer missing a 'self' call to another initializer">,
   InGroup<ObjCDesignatedInit>;
 def warn_objc_implementation_missing_designated_init_override : Warning<
   "method override for the designated initializer of the superclass %objcinstance0 not found">,
@@ -2551,8 +2557,6 @@ def warn_objc_invalid_bridge : Warning<
   "%0 bridges to %1, not %2">, InGroup<ObjCBridge>;
 def warn_objc_invalid_bridge_to_cf : Warning<
   "%0 cannot bridge to %1">, InGroup<ObjCBridge>;
-def err_objc_invalid_bridge : Error<
-  "under ARC %0 bridges to %1, but it still requires an explicit bridge cast">;
 
 // objc_bridge_related attribute diagnostics.
 def err_objc_bridged_related_invalid_class : Error<
@@ -3310,6 +3314,9 @@ def note_var_prev_partial_spec_here : Note<
   "previous declaration of variable template partial specialization is here">;
 def err_var_spec_no_template : Error<
   "no variable template matches%select{| partial}0 specialization">;
+def err_var_spec_no_template_but_method : Error<
+  "no variable template matches specialization; "
+  "did you mean to use %0 as function template instead?">;
   
 // C++ Function template specializations
 def err_function_template_spec_no_match : Error<
@@ -3389,6 +3396,9 @@ def err_nested_name_spec_non_tag : Error<
 // C++ Explicit Instantiation
 def err_explicit_instantiation_duplicate : Error<
     "duplicate explicit instantiation of %0">;
+def warn_explicit_instantiation_duplicate : ExtWarn<
+    "duplicate explicit instantiation of %0 ignored as a Microsoft extension">,
+    InGroup<Microsoft>;
 def note_previous_explicit_instantiation : Note<
     "previous explicit instantiation is here">;
 def ext_explicit_instantiation_after_specialization : Extension<
@@ -4681,6 +4691,9 @@ def err_typecheck_unary_expr : Error<
   "invalid argument type %0 to unary expression">;
 def err_typecheck_indirection_requires_pointer : Error<
   "indirection requires pointer operand (%0 invalid)">;
+def ext_typecheck_indirection_through_void_pointer : Extension<
+  "ISO C++ does not allow indirection on operand of type %0">,
+  InGroup<DiagGroup<"void-ptr-dereference">>;
 def warn_indirection_through_null : Warning<
   "indirection of non-volatile null pointer will be deleted, not trap">, InGroup<NullDereference>;
 def note_indirection_through_null : Note<
@@ -6989,6 +7002,8 @@ def note_module_import_in_extern_c : Note<
 def err_module_import_not_at_top_level : Error<
   "import of module '%0' appears within %1">;
 def note_module_import_not_at_top_level : Note<"%0 begins here">;
+def err_module_self_import : Error<
+  "import of module '%0' appears within same top-level module '%1'">;
 }
 
 let CategoryName = "Documentation Issue" in {

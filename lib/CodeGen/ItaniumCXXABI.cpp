@@ -52,16 +52,14 @@ public:
     CGCXXABI(CGM), UseARMMethodPtrABI(UseARMMethodPtrABI),
     UseARMGuardVarABI(UseARMGuardVarABI) { }
 
-  bool isReturnTypeIndirect(const CXXRecordDecl *RD) const override {
-    // Structures with either a non-trivial destructor or a non-trivial
-    // copy constructor are always indirect.
-    return !RD->hasTrivialDestructor() || RD->hasNonTrivialCopyConstructor();
-  }
+  bool classifyReturnType(CGFunctionInfo &FI) const override;
 
   RecordArgABI getRecordArgABI(const CXXRecordDecl *RD) const override {
     // Structures with either a non-trivial destructor or a non-trivial
     // copy constructor are always indirect.
-    if (!RD->hasTrivialDestructor() || RD->hasNonTrivialCopyConstructor())
+    // FIXME: Use canCopyArgument() when it is fixed to handle lazily declared
+    // special members.
+    if (RD->hasNonTrivialDestructor() || RD->hasNonTrivialCopyConstructor())
       return RAA_Indirect;
     return RAA_Default;
   }
@@ -759,6 +757,21 @@ ItaniumCXXABI::EmitMemberPointerIsNotNull(CodeGenFunction &CGF,
   }
 
   return Result;
+}
+
+bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
+  const CXXRecordDecl *RD = FI.getReturnType()->getAsCXXRecordDecl();
+  if (!RD)
+    return false;
+
+  // Return indirectly if we have a non-trivial copy ctor or non-trivial dtor.
+  // FIXME: Use canCopyArgument() when it is fixed to handle lazily declared
+  // special members.
+  if (RD->hasNonTrivialDestructor() || RD->hasNonTrivialCopyConstructor()) {
+    FI.getReturnInfo() = ABIArgInfo::getIndirect(0, /*ByVal=*/false);
+    return true;
+  }
+  return false;
 }
 
 /// The Itanium ABI requires non-zero initialization only for data
@@ -1582,10 +1595,12 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
 
   llvm::FunctionType *FnTy = llvm::FunctionType::get(RetTy, false);
   llvm::Function *Wrapper = llvm::Function::Create(
-      FnTy, getThreadLocalWrapperLinkage(Var->getLinkage()), WrapperName.str(),
-      &CGM.getModule());
+      FnTy, getThreadLocalWrapperLinkage(
+                CGM.getLLVMLinkageVarDefinition(VD, /*isConstant=*/false)),
+      WrapperName.str(), &CGM.getModule());
   // Always resolve references to the wrapper at link time.
-  Wrapper->setVisibility(llvm::GlobalValue::HiddenVisibility);
+  if (!Wrapper->hasLocalLinkage())
+    Wrapper->setVisibility(llvm::GlobalValue::HiddenVisibility);
   return Wrapper;
 }
 

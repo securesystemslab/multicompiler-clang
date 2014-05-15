@@ -56,21 +56,19 @@ ExternalPreprocessorSource::~ExternalPreprocessorSource() { }
 
 Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
                            DiagnosticsEngine &diags, LangOptions &opts,
-                           const TargetInfo *target, SourceManager &SM,
-                           HeaderSearch &Headers, ModuleLoader &TheModuleLoader,
+                           SourceManager &SM, HeaderSearch &Headers,
+                           ModuleLoader &TheModuleLoader,
                            IdentifierInfoLookup *IILookup, bool OwnsHeaders,
-                           bool DelayInitialization, bool IncrProcessing,
                            TranslationUnitKind TUKind)
-    : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(target),
+    : PPOpts(PPOpts), Diags(&diags), LangOpts(opts), Target(0),
       FileMgr(Headers.getFileMgr()), SourceMgr(SM), HeaderInfo(Headers),
       TheModuleLoader(TheModuleLoader), ExternalSource(0),
-      Identifiers(opts, IILookup), IncrementalProcessing(IncrProcessing),
-      TUKind(TUKind),
+      Identifiers(opts, IILookup), IncrementalProcessing(false), TUKind(TUKind),
       CodeComplete(0), CodeCompletionFile(0), CodeCompletionOffset(0),
       LastTokenWasAt(false), ModuleImportExpectsIdentifier(false),
       CodeCompletionReached(0), SkipMainFilePreamble(0, true), CurPPLexer(0),
-      CurDirLookup(0), CurLexerKind(CLK_Lexer), CurSubmodule(0),
-      Callbacks(0), MacroArgCache(0), Record(0), MIChainHead(0), MICache(0),
+      CurDirLookup(0), CurLexerKind(CLK_Lexer), CurSubmodule(0), Callbacks(0),
+      MacroArgCache(0), Record(0), MIChainHead(0), MICache(0),
       DeserialMIChainHead(0) {
   OwnsHeaderSearch = OwnsHeaders;
   
@@ -133,11 +131,6 @@ Preprocessor::Preprocessor(IntrusiveRefCntPtr<PreprocessorOptions> PPOpts,
     Ident___exception_info = Ident___exception_code = Ident___abnormal_termination = 0;
     Ident_GetExceptionInfo = Ident_GetExceptionCode = Ident_AbnormalTermination = 0;
   }
-
-  if (!DelayInitialization) {
-    assert(Target && "Must provide target information for PP initialization");
-    Initialize(*Target);
-  }
 }
 
 Preprocessor::~Preprocessor() {
@@ -150,14 +143,17 @@ Preprocessor::~Preprocessor() {
     I->MI.Destroy();
 
   // Free any cached macro expanders.
+  // This populates MacroArgCache, so all TokenLexers need to be destroyed
+  // before the code below that frees up the MacroArgCache list.
   for (unsigned i = 0, e = NumCachedTokenLexers; i != e; ++i)
     delete TokenLexerCache[i];
+  CurTokenLexer.reset();
 
   for (DeserializedMacroInfoChain *I = DeserialMIChainHead ; I ; I = I->Next)
     I->MI.Destroy();
 
   // Free any cached MacroArgs.
-  for (MacroArgs *ArgList = MacroArgCache; ArgList; )
+  for (MacroArgs *ArgList = MacroArgCache; ArgList;)
     ArgList = ArgList->deallocate();
 
   // Release pragma information.

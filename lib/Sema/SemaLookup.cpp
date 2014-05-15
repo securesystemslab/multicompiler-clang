@@ -23,7 +23,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/Basic/Builtins.h"
 #include "clang/Basic/LangOptions.h"
-#include "clang/Lex/Preprocessor.h"
+#include "clang/Lex/ModuleLoader.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ExternalSemaSource.h"
 #include "clang/Sema/Overload.h"
@@ -3982,14 +3982,13 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
 
   TypoCorrectionConsumer Consumer(*this, Typo);
 
+  // If we're handling a missing symbol error, using modules, and the
+  // special search all modules option is used, look for a missing import.
   if ((Mode == CTK_ErrorRecovery) &&  getLangOpts().Modules &&
       getLangOpts().ModulesSearchAll) {
-    if (PP.getModuleLoader().lookupMissingImports(Typo->getName(),
-                                               TypoName.getLocStart())) {
-      TypoCorrection TC(TypoName.getName(), (NestedNameSpecifier *)0, 0);
-      TC.setCorrectionRange(SS, TypoName);
-      TC.setRequiresImport(true);
-    }
+    // The following has the side effect of loading the missing module.
+    getModuleLoader().lookupMissingImports(Typo->getName(),
+                                           TypoName.getLocStart());
   }
 
   NamespaceSpecifierSet Namespaces(Context, CurContext, SS);
@@ -4577,9 +4576,9 @@ void Sema::diagnoseTypo(const TypoCorrection &Correction,
     Diag(Def->getLocation(), diag::note_previous_declaration);
 
     // Recover by implicitly importing this module.
-    if (!isSFINAEContext() && ErrorRecovery)
-      createImplicitModuleImport(Correction.getCorrectionRange().getBegin(),
-                                 Owner);
+    if (ErrorRecovery)
+      createImplicitModuleImportForErrorRecovery(
+          Correction.getCorrectionRange().getBegin(), Owner);
     return;
   }
 

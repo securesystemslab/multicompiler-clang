@@ -23,7 +23,6 @@ namespace clang {
 /// \brief Provides common interface for the Decls that can be redeclared.
 template<typename decl_type>
 class Redeclarable {
-
 protected:
   class DeclLink {
     llvm::PointerIntPair<decl_type *, 1, bool> NextAndIsPrevious;
@@ -58,6 +57,10 @@ protected:
   /// If there is only one declaration, it is <pointer to self, true>
   DeclLink RedeclLink;
 
+  decl_type *getNextRedeclaration() const {
+    return RedeclLink.getNext();
+  }
+
 public:
   Redeclarable() : RedeclLink(LatestDeclLink(static_cast<decl_type*>(this))) { }
 
@@ -65,8 +68,8 @@ public:
   /// is the first declaration.
   decl_type *getPreviousDecl() {
     if (RedeclLink.NextIsPrevious())
-      return RedeclLink.getNext();
-    return 0;
+      return getNextRedeclaration();
+    return nullptr;
   }
   const decl_type *getPreviousDecl() const {
     return const_cast<decl_type *>(
@@ -96,12 +99,12 @@ public:
 
   /// \brief Returns the most recent (re)declaration of this declaration.
   decl_type *getMostRecentDecl() {
-    return getFirstDecl()->RedeclLink.getNext();
+    return getFirstDecl()->getNextRedeclaration();
   }
 
   /// \brief Returns the most recent (re)declaration of this declaration.
   const decl_type *getMostRecentDecl() const {
-    return getFirstDecl()->RedeclLink.getNext();
+    return getFirstDecl()->getNextRedeclaration();
   }
   
   /// \brief Set the previous declaration. If PrevDecl is NULL, set this as the
@@ -122,7 +125,7 @@ public:
     typedef std::forward_iterator_tag iterator_category;
     typedef std::ptrdiff_t            difference_type;
 
-    redecl_iterator() : Current(0) { }
+    redecl_iterator() : Current(nullptr) { }
     explicit redecl_iterator(decl_type *C)
       : Current(C), Starter(C), PassedFirst(false) { }
 
@@ -135,15 +138,15 @@ public:
       if (Current->isFirstDecl()) {
         if (PassedFirst) {
           assert(0 && "Passed first decl twice, invalid redecl chain!");
-          Current = 0;
+          Current = nullptr;
           return *this;
         }
         PassedFirst = true;
       }
 
       // Get either previous decl or latest decl.
-      decl_type *Next = Current->RedeclLink.getNext();
-      Current = (Next != Starter ? Next : 0);
+      decl_type *Next = Current->getNextRedeclaration();
+      Current = (Next != Starter) ? Next : nullptr;
       return *this;
     }
 

@@ -186,6 +186,10 @@ def IncompatiblePointerTypes
     [IncompatiblePointerTypesDiscardsQualifiers]>;
 def IncompleteUmbrella : DiagGroup<"incomplete-umbrella">;
 def IncompleteModule : DiagGroup<"incomplete-module", [IncompleteUmbrella]>;
+def NonModularIncludeInFrameworkModule
+  : DiagGroup<"non-modular-include-in-framework-module">;
+def NonModularIncludeInModule : DiagGroup<"non-modular-include-in-module",
+                                          [NonModularIncludeInFrameworkModule]>;
 def InvalidNoreturn : DiagGroup<"invalid-noreturn">;
 def InvalidSourceEncoding : DiagGroup<"invalid-source-encoding">;
 def KNRPromotedParameter : DiagGroup<"knr-promoted-parameter">;
@@ -421,6 +425,7 @@ def Visibility : DiagGroup<"visibility">;
 def ZeroLengthArray : DiagGroup<"zero-length-array">;
 def GNUZeroLineDirective : DiagGroup<"gnu-zero-line-directive">;
 def GNUZeroVariadicMacroArguments : DiagGroup<"gnu-zero-variadic-macro-arguments">;
+def Fallback : DiagGroup<"fallback">;
 
 // This covers both the deprecated case (in C++98)
 // and the extension case (in C++11 onwards).

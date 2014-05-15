@@ -239,13 +239,10 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
                                               getDiagnostics(),
                                               getLangOpts(),
                                               &getTarget());
-  PP = new Preprocessor(&getPreprocessorOpts(),
-                        getDiagnostics(), getLangOpts(), &getTarget(),
+  PP = new Preprocessor(&getPreprocessorOpts(), getDiagnostics(), getLangOpts(),
                         getSourceManager(), *HeaderInfo, *this, PTHMgr,
-                        /*OwnsHeaderSearch=*/true,
-                        /*DelayInitialization=*/false,
-                        /*IncrProcessing=*/false,
-                        TUKind);
+                        /*OwnsHeaderSearch=*/true, TUKind);
+  PP->Initialize(getTarget());
 
   // Note that this is different then passing PTHMgr to Preprocessor's ctor.
   // That argument is used as the IdentifierInfoLookup argument to
@@ -303,40 +300,32 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
 void CompilerInstance::createASTContext() {
   Preprocessor &PP = getPreprocessor();
   Context = new ASTContext(getLangOpts(), PP.getSourceManager(),
-                           &getTarget(), PP.getIdentifierTable(),
-                           PP.getSelectorTable(), PP.getBuiltinInfo(),
-                           /*size_reserve=*/ 0);
+                           PP.getIdentifierTable(), PP.getSelectorTable(),
+                           PP.getBuiltinInfo());
+  Context->InitBuiltinTypes(getTarget());
 }
 
 // ExternalASTSource
 
-void CompilerInstance::createPCHExternalASTSource(StringRef Path,
-                                                  bool DisablePCHValidation,
-                                                bool AllowPCHWithCompilerErrors,
-                                                 void *DeserializationListener){
+void CompilerInstance::createPCHExternalASTSource(
+    StringRef Path, bool DisablePCHValidation, bool AllowPCHWithCompilerErrors,
+    void *DeserializationListener, bool OwnDeserializationListener) {
   IntrusiveRefCntPtr<ExternalASTSource> Source;
   bool Preamble = getPreprocessorOpts().PrecompiledPreambleBytes.first != 0;
-  Source = createPCHExternalASTSource(Path, getHeaderSearchOpts().Sysroot,
-                                          DisablePCHValidation,
-                                          AllowPCHWithCompilerErrors,
-                                          getPreprocessor(), getASTContext(),
-                                          DeserializationListener,
-                                          Preamble,
-                                       getFrontendOpts().UseGlobalModuleIndex);
+  Source = createPCHExternalASTSource(
+      Path, getHeaderSearchOpts().Sysroot, DisablePCHValidation,
+      AllowPCHWithCompilerErrors, getPreprocessor(), getASTContext(),
+      DeserializationListener, OwnDeserializationListener, Preamble,
+      getFrontendOpts().UseGlobalModuleIndex);
   ModuleManager = static_cast<ASTReader*>(Source.getPtr());
   getASTContext().setExternalSource(Source);
 }
 
-ExternalASTSource *
-CompilerInstance::createPCHExternalASTSource(StringRef Path,
-                                             const std::string &Sysroot,
-                                             bool DisablePCHValidation,
-                                             bool AllowPCHWithCompilerErrors,
-                                             Preprocessor &PP,
-                                             ASTContext &Context,
-                                             void *DeserializationListener,
-                                             bool Preamble,
-                                             bool UseGlobalModuleIndex) {
+ExternalASTSource *CompilerInstance::createPCHExternalASTSource(
+    StringRef Path, const std::string &Sysroot, bool DisablePCHValidation,
+    bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
+    void *DeserializationListener, bool OwnDeserializationListener,
+    bool Preamble, bool UseGlobalModuleIndex) {
   HeaderSearchOptions &HSOpts = PP.getHeaderSearchInfo().getHeaderSearchOpts();
 
   std::unique_ptr<ASTReader> Reader;
@@ -349,7 +338,8 @@ CompilerInstance::createPCHExternalASTSource(StringRef Path,
                              UseGlobalModuleIndex));
 
   Reader->setDeserializationListener(
-            static_cast<ASTDeserializationListener *>(DeserializationListener));
+      static_cast<ASTDeserializationListener *>(DeserializationListener),
+      /*TakeOwnership=*/OwnDeserializationListener);
   switch (Reader->ReadAST(Path,
                           Preamble ? serialization::MK_Preamble
                                    : serialization::MK_PCH,
@@ -1167,7 +1157,7 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
     Module = Known->second;    
   } else if (ModuleName == getLangOpts().CurrentModule) {
     // This is the module we're building. 
-    Module = PP->getHeaderSearchInfo().getModuleMap().findModule(ModuleName);
+    Module = PP->getHeaderSearchInfo().lookupModule(ModuleName);
     Known = KnownModules.insert(std::make_pair(Path[0].first, Module)).first;
   } else {
     // Search for a module with the given name.
@@ -1180,7 +1170,8 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
       return ModuleLoadResult();
     }
 
-    std::string ModuleFileName = PP->getHeaderSearchInfo().getModuleFileName(Module);
+    std::string ModuleFileName =
+        PP->getHeaderSearchInfo().getModuleFileName(Module);
 
     // If we don't already have an ASTReader, create one now.
     if (!ModuleManager)
@@ -1220,6 +1211,9 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
           << ModuleName << CyclePath;
         return ModuleLoadResult();
       }
+
+      getDiagnostics().Report(ImportLoc, diag::remark_module_build)
+          << ModuleName << ModuleFileName;
 
       // Check whether we have already attempted to build this module (but
       // failed).

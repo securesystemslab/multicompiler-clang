@@ -21,18 +21,19 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
+#include "llvm/ADT/iterator_range.h"
 #include <list>
 #include <vector>
 
 namespace clang {
-  class DiagnosticConsumer;
+  class DeclContext;
   class DiagnosticBuilder;
+  class DiagnosticConsumer;
+  class DiagnosticErrorTrap;
   class DiagnosticOptions;
   class IdentifierInfo;
-  class DeclContext;
   class LangOptions;
   class Preprocessor;
-  class DiagnosticErrorTrap;
   class StoredDiagnostic;
   namespace tok {
   enum TokenKind : unsigned short;
@@ -131,6 +132,9 @@ public:
 /// the user. DiagnosticsEngine is tied to one translation unit and one
 /// SourceManager.
 class DiagnosticsEngine : public RefCountedBase<DiagnosticsEngine> {
+  DiagnosticsEngine(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
+  void operator=(const DiagnosticsEngine &) LLVM_DELETED_FUNCTION;
+
 public:
   /// \brief The level of the diagnostic, after it has been through mapping.
   enum Level {
@@ -353,7 +357,7 @@ public:
   explicit DiagnosticsEngine(
                       const IntrusiveRefCntPtr<DiagnosticIDs> &Diags,
                       DiagnosticOptions *DiagOpts,
-                      DiagnosticConsumer *client = 0,
+                      DiagnosticConsumer *client = nullptr,
                       bool ShouldOwnClient = true);
   ~DiagnosticsEngine();
 
@@ -363,6 +367,14 @@ public:
 
   /// \brief Retrieve the diagnostic options.
   DiagnosticOptions &getDiagnosticOptions() const { return *DiagOpts; }
+
+  typedef llvm::iterator_range<DiagState::const_iterator> diag_mapping_range;
+
+  /// \brief Get the current set of diagnostic mappings.
+  diag_mapping_range getDiagnosticMappings() const {
+    const DiagState &DS = *GetCurDiagState();
+    return diag_mapping_range(DS.begin(), DS.end());
+  }
 
   DiagnosticConsumer *getClient() { return Client; }
   const DiagnosticConsumer *getClient() const { return Client; }
@@ -377,7 +389,7 @@ public:
     return Client;
   }
 
-  bool hasSourceManager() const { return SourceMgr != 0; }
+  bool hasSourceManager() const { return SourceMgr != nullptr; }
   SourceManager &getSourceManager() const {
     assert(SourceMgr && "SourceManager not set!");
     return *SourceMgr;
@@ -880,7 +892,7 @@ class DiagnosticBuilder {
   friend class DiagnosticsEngine;
   
   DiagnosticBuilder()
-    : DiagObj(0), NumArgs(0), NumRanges(0), NumFixits(0), IsActive(false),
+    : DiagObj(nullptr), NumArgs(0), NumRanges(0), NumFixits(0), IsActive(false),
       IsForceEmit(false) { }
 
   explicit DiagnosticBuilder(DiagnosticsEngine *diagObj)
@@ -900,7 +912,7 @@ protected:
 
   /// \brief Clear out the current diagnostic.
   void Clear() const {
-    DiagObj = 0;
+    DiagObj = nullptr;
     IsActive = false;
     IsForceEmit = false;
   }
@@ -1236,7 +1248,7 @@ public:
   }
 
   const FixItHint *getFixItHints() const {
-    return getNumFixItHints()? DiagObj->DiagFixItHints : 0;
+    return getNumFixItHints()? DiagObj->DiagFixItHints : nullptr;
   }
 
   /// \brief Format this diagnostic into a string, substituting the
@@ -1332,7 +1344,7 @@ public:
   /// \param PP The preprocessor object being used for the source; this is 
   /// optional, e.g., it may not be present when processing AST source files.
   virtual void BeginSourceFile(const LangOptions &LangOpts,
-                               const Preprocessor *PP = 0) {}
+                               const Preprocessor *PP = nullptr) {}
 
   /// \brief Callback to inform the diagnostic client that processing
   /// of a source file has ended.
@@ -1403,6 +1415,13 @@ struct TemplateDiffTypes {
 /// Special character that the diagnostic printer will use to toggle the bold
 /// attribute.  The character itself will be not be printed.
 const char ToggleHighlight = 127;
+
+
+/// ProcessWarningOptions - Initialize the diagnostic client and process the
+/// warning options specified on the command line.
+void ProcessWarningOptions(DiagnosticsEngine &Diags,
+                           const DiagnosticOptions &Opts,
+                           bool ReportDiags = true);
 
 }  // end namespace clang
 

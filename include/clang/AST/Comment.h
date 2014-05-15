@@ -105,9 +105,8 @@ protected:
 
     unsigned : NumInlineContentCommentBits;
 
-    /// True if this tag is safe to pass through to HTML output even if the
-    /// comment comes from an untrusted source.
-    unsigned IsSafeToPassThrough : 1;
+    /// True if we found that this tag is malformed in some way.
+    unsigned IsMalformed : 1;
   };
   enum { NumHTMLTagCommentBits = NumInlineContentCommentBits + 1 };
 
@@ -279,9 +278,9 @@ public:
     return C->getCommentKind() == TextCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 
   StringRef getText() const LLVM_READONLY { return Text; }
 
@@ -337,9 +336,9 @@ public:
     return C->getCommentKind() == InlineCommandCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 
   unsigned getCommandID() const {
     return InlineCommandCommentBits.CommandID;
@@ -388,7 +387,7 @@ protected:
       TagName(TagName),
       TagNameRange(TagNameBegin, TagNameEnd) {
     setLocation(TagNameBegin);
-    HTMLTagCommentBits.IsSafeToPassThrough = 1;
+    HTMLTagCommentBits.IsMalformed = 0;
   }
 
 public:
@@ -405,12 +404,12 @@ public:
                        L.getLocWithOffset(1 + TagName.size()));
   }
 
-  bool isSafeToPassThrough() const {
-    return HTMLTagCommentBits.IsSafeToPassThrough;
+  bool isMalformed() const {
+    return HTMLTagCommentBits.IsMalformed;
   }
 
-  void setUnsafeToPassThrough() {
-    HTMLTagCommentBits.IsSafeToPassThrough = 0;
+  void setIsMalformed() {
+    HTMLTagCommentBits.IsMalformed = 1;
   }
 };
 
@@ -470,9 +469,9 @@ public:
     return C->getCommentKind() == HTMLStartTagCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 
   unsigned getNumAttrs() const {
     return Attributes.size();
@@ -525,9 +524,9 @@ public:
     return C->getCommentKind() == HTMLEndTagCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 };
 
 /// Block content (contains inline content).
@@ -621,7 +620,7 @@ protected:
                       unsigned CommandID,
                       CommandMarkerKind CommandMarker) :
       BlockContentComment(K, LocBegin, LocEnd),
-      Paragraph(NULL) {
+      Paragraph(nullptr) {
     setLocation(getCommandNameBeginLoc());
     BlockCommandCommentBits.CommandID = CommandID;
     BlockCommandCommentBits.CommandMarker = CommandMarker;
@@ -633,7 +632,7 @@ public:
                       unsigned CommandID,
                       CommandMarkerKind CommandMarker) :
       BlockContentComment(BlockCommandCommentKind, LocBegin, LocEnd),
-      Paragraph(NULL) {
+      Paragraph(nullptr) {
     setLocation(getCommandNameBeginLoc());
     BlockCommandCommentBits.CommandID = CommandID;
     BlockCommandCommentBits.CommandMarker = CommandMarker;
@@ -881,9 +880,9 @@ public:
     return C->getCommentKind() == VerbatimBlockLineCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 
   StringRef getText() const LLVM_READONLY {
     return Text;
@@ -968,9 +967,9 @@ public:
     return C->getCommentKind() == VerbatimLineCommentKind;
   }
 
-  child_iterator child_begin() const { return NULL; }
+  child_iterator child_begin() const { return nullptr; }
 
-  child_iterator child_end() const { return NULL; }
+  child_iterator child_end() const { return nullptr; }
 
   StringRef getText() const {
     return Text;

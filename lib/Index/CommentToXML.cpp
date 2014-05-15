@@ -669,8 +669,8 @@ void CommentASTToXMLConverter::visitInlineCommandComment(
 void CommentASTToXMLConverter::visitHTMLStartTagComment(
     const HTMLStartTagComment *C) {
   Result << "<rawHTML";
-  if (C->isSafeToPassThrough())
-    Result << " isSafeToPassThrough=\"1\"";
+  if (C->isMalformed())
+    Result << " isMalformed=\"1\"";
   Result << ">";
   {
     SmallString<32> Tag;
@@ -686,8 +686,8 @@ void CommentASTToXMLConverter::visitHTMLStartTagComment(
 void
 CommentASTToXMLConverter::visitHTMLEndTagComment(const HTMLEndTagComment *C) {
   Result << "<rawHTML";
-  if (C->isSafeToPassThrough())
-    Result << " isSafeToPassThrough=\"1\"";
+  if (C->isMalformed())
+    Result << " isMalformed=\"1\"";
   Result << ">&lt;/" << C->getTagName() << "&gt;</rawHTML>";
 }
 
@@ -1136,9 +1136,8 @@ void CommentASTToXMLConverter::appendToResultWithCDATAEscaping(StringRef S) {
   Result << "]]>";
 }
 
-CommentToXMLConverter::~CommentToXMLConverter() {
-  delete FormatContext;
-}
+CommentToXMLConverter::CommentToXMLConverter() : FormatInMemoryUniqueId(0) {}
+CommentToXMLConverter::~CommentToXMLConverter() {}
 
 void CommentToXMLConverter::convertCommentToHTML(const FullComment *FC,
                                                  SmallVectorImpl<char> &HTML,
@@ -1159,13 +1158,10 @@ void CommentToXMLConverter::convertHTMLTagNodeToText(
 void CommentToXMLConverter::convertCommentToXML(const FullComment *FC,
                                                 SmallVectorImpl<char> &XML,
                                                 const ASTContext &Context) {
-  if (!FormatContext) {
-    FormatContext = new SimpleFormatContext(Context.getLangOpts());
-  } else if ((FormatInMemoryUniqueId % 1000) == 0) {
-    // Delete after some number of iterations, so the buffers don't grow
-    // too large.
-    delete FormatContext;
-    FormatContext = new SimpleFormatContext(Context.getLangOpts());
+  if (!FormatContext || (FormatInMemoryUniqueId % 1000) == 0) {
+    // Create a new format context, or re-create it after some number of
+    // iterations, so the buffers don't grow too large.
+    FormatContext.reset(new SimpleFormatContext(Context.getLangOpts()));
   }
 
   CommentASTToXMLConverter Converter(FC, XML, Context.getCommentCommandTraits(),

@@ -11,8 +11,9 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#include "clang/AST/ASTConsumer.h"
 #include "RAIIObjectsForParser.h"
+#include "clang/AST/ASTConsumer.h"
+#include "clang/AST/ASTContext.h"
 #include "clang/AST/StmtOpenMP.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Parse/Parser.h"
@@ -62,7 +63,6 @@ Parser::DeclGroupPtrTy Parser::ParseOpenMPDeclarativeDirective() {
   case OMPD_parallel:
   case OMPD_simd:
   case OMPD_task:
-  case NUM_OPENMP_DIRECTIVES:
     Diag(Tok, diag::err_omp_unexpected_directive)
       << getOpenMPDirectiveName(DKind);
     break;
@@ -85,8 +85,8 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective() {
   ParenBraceBracketBalancer BalancerRAIIObj(*this);
   SmallVector<Expr *, 5> Identifiers;
   SmallVector<OMPClause *, 5> Clauses;
-  SmallVector<llvm::PointerIntPair<OMPClause *, 1, bool>, NUM_OPENMP_CLAUSES>
-                                               FirstClauses(NUM_OPENMP_CLAUSES);
+  SmallVector<llvm::PointerIntPair<OMPClause *, 1, bool>, OMPC_unknown + 1>
+                                               FirstClauses(OMPC_unknown + 1);
   const unsigned ScopeFlags = Scope::FnScope | Scope::DeclScope |
                               Scope::OpenMPDirectiveScope;
   SourceLocation Loc = ConsumeToken(), EndLoc;
@@ -148,7 +148,7 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective() {
     {
       // The body is a block scope like in Lambdas and Blocks.
       Sema::CompoundScopeRAII CompoundScope(Actions);
-      Actions.ActOnCapturedRegionStart(Loc, getCurScope(), CR_OpenMP, 1);
+      Actions.ActOnOpenMPRegionStart(DKind, Loc, getCurScope());
       Actions.ActOnStartOfCompoundStmt();
       // Parse statement
       AssociatedStmt = ParseStatement();
@@ -176,7 +176,6 @@ StmtResult Parser::ParseOpenMPDeclarativeOrExecutableDirective() {
     SkipUntil(tok::annot_pragma_openmp_end);
     break;
   case OMPD_task:
-  case NUM_OPENMP_DIRECTIVES:
     Diag(Tok, diag::err_omp_unexpected_directive)
       << getOpenMPDirectiveName(DKind);
     SkipUntil(tok::annot_pragma_openmp_end);
@@ -288,9 +287,12 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
     Clause = ParseOpenMPSingleExprClause(CKind);
     break;
   case OMPC_default:
+  case OMPC_proc_bind:
     // OpenMP [2.14.3.1, Restrictions]
     //  Only a single default clause may be specified on a parallel, task or
     //  teams directive.
+    // OpenMP [2.5, parallel Construct, Restrictions]
+    //  At most one proc_bind clause can appear on the directive.
     if (!FirstClause) {
       Diag(Tok, diag::err_omp_more_one_clause)
            << getOpenMPDirectiveName(DKind) << getOpenMPClauseName(CKind);
@@ -311,7 +313,6 @@ OMPClause *Parser::ParseOpenMPClause(OpenMPDirectiveKind DKind,
     SkipUntil(tok::annot_pragma_openmp_end, StopBeforeMatch);
     break;
   case OMPC_threadprivate:
-  case NUM_OPENMP_CLAUSES:
     Diag(Tok, diag::err_omp_unexpected_clause)
       << getOpenMPClauseName(CKind) << getOpenMPDirectiveName(DKind);
     SkipUntil(tok::comma, tok::annot_pragma_openmp_end, StopBeforeMatch);
@@ -355,10 +356,13 @@ OMPClause *Parser::ParseOpenMPSingleExprClause(OpenMPClauseKind Kind) {
                                              T.getCloseLocation());
 }
 
-/// \brief Parsing of simple OpenMP clauses like 'default'.
+/// \brief Parsing of simple OpenMP clauses like 'default' or 'proc_bind'.
 ///
 ///    default-clause:
 ///         'default' '(' 'none' | 'shared' ')
+///
+///    proc_bind-clause:
+///         'proc_bind' '(' 'master' | 'close' | 'spread' ')
 ///
 OMPClause *Parser::ParseOpenMPSimpleClause(OpenMPClauseKind Kind) {
   SourceLocation Loc = Tok.getLocation();
@@ -369,9 +373,9 @@ OMPClause *Parser::ParseOpenMPSimpleClause(OpenMPClauseKind Kind) {
                          getOpenMPClauseName(Kind)))
     return 0;
 
-  unsigned Type = Tok.isAnnotation() ?
-                     unsigned(OMPC_DEFAULT_unknown) :
-                     getOpenMPSimpleClauseType(Kind, PP.getSpelling(Tok));
+  unsigned Type =
+      getOpenMPSimpleClauseType(Kind,
+                                Tok.isAnnotation() ? "" : PP.getSpelling(Tok));
   SourceLocation TypeLoc = Tok.getLocation();
   if (Tok.isNot(tok::r_paren) && Tok.isNot(tok::comma) &&
       Tok.isNot(tok::annot_pragma_openmp_end))

@@ -23,6 +23,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/AST/TypeLocVisitor.h"
+#include "clang/Basic/DiagnosticOptions.h"
 #include "clang/Basic/FileManager.h"
 #include "clang/Basic/FileSystemStatCache.h"
 #include "clang/Basic/SourceManager.h"
@@ -1136,7 +1137,6 @@ void ASTWriter::WriteControlBlock(Preprocessor &PP, ASTContext &Context,
   AddString(TargetOpts.Triple, Record);
   AddString(TargetOpts.CPU, Record);
   AddString(TargetOpts.ABI, Record);
-  AddString(TargetOpts.LinkerVersion, Record);
   Record.push_back(TargetOpts.FeaturesAsWritten.size());
   for (unsigned I = 0, N = TargetOpts.FeaturesAsWritten.size(); I != N; ++I) {
     AddString(TargetOpts.FeaturesAsWritten[I], Record);
@@ -5371,7 +5371,7 @@ void ASTWriter::AddCXXDefinitionData(const CXXRecordDecl *D, RecordDataImpl &Rec
     AddDeclRef(Lambda.ContextDecl, Record);
     AddTypeSourceInfo(Lambda.MethodTyInfo, Record);
     for (unsigned I = 0, N = Lambda.NumCaptures; I != N; ++I) {
-      LambdaExpr::Capture &Capture = Lambda.Captures[I];
+      const LambdaCapture &Capture = Lambda.Captures[I];
       AddSourceLocation(Capture.getLocation(), Record);
       Record.push_back(Capture.isImplicit());
       Record.push_back(Capture.getCaptureKind());
