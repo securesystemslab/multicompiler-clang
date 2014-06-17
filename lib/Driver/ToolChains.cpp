@@ -10,6 +10,7 @@
 #include "ToolChains.h"
 #include "clang/Basic/ObjCRuntime.h"
 #include "clang/Basic/Version.h"
+#include "clang/Config/config.h" // for GCC_INSTALL_PREFIX
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -29,13 +30,8 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
-
-// FIXME: This needs to be listed last until we fix the broken include guards
-// in these files and the LLVM config.h files.
-#include "clang/Config/config.h" // for GCC_INSTALL_PREFIX
-
 #include <cstdlib> // ::getenv
+#include <system_error>
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -45,6 +41,14 @@ using namespace llvm::opt;
 MachO::MachO(const Driver &D, const llvm::Triple &Triple,
                        const ArgList &Args)
   : ToolChain(D, Triple, Args) {
+  getProgramPaths().push_back(getDriver().getInstalledDir());
+  if (getDriver().getInstalledDir() != getDriver().Dir)
+    getProgramPaths().push_back(getDriver().Dir);
+
+  // We expect 'as', 'ld', etc. to be adjacent to our install dir.
+  getProgramPaths().push_back(getDriver().getInstalledDir());
+  if (getDriver().getInstalledDir() != getDriver().Dir)
+    getProgramPaths().push_back(getDriver().Dir);
 }
 
 /// Darwin - Darwin tool chain for i386 and x86_64.
@@ -118,7 +122,7 @@ static const char *GetArmArchForMArch(StringRef Value) {
     .Cases("armv7k", "armv7-k", "armv7k")
     .Cases("armv7m", "armv7-m", "armv7m")
     .Cases("armv7s", "armv7-s", "armv7s")
-    .Default(0);
+    .Default(nullptr);
 }
 
 static const char *GetArmArchForMCpu(StringRef Value) {
@@ -135,7 +139,7 @@ static const char *GetArmArchForMCpu(StringRef Value) {
     .Case("cortex-m3", "armv7m")
     .Case("cortex-m4", "armv7em")
     .Case("swift", "armv7s")
-    .Default(0);
+    .Default(nullptr);
 }
 
 static bool isSoftFloatABI(const ArgList &Args) {
@@ -232,14 +236,6 @@ Tool *MachO::buildAssembler() const {
 DarwinClang::DarwinClang(const Driver &D, const llvm::Triple& Triple,
                          const ArgList &Args)
   : Darwin(D, Triple, Args) {
-  getProgramPaths().push_back(getDriver().getInstalledDir());
-  if (getDriver().getInstalledDir() != getDriver().Dir)
-    getProgramPaths().push_back(getDriver().Dir);
-
-  // We expect 'as', 'ld', etc. to be adjacent to our install dir.
-  getProgramPaths().push_back(getDriver().getInstalledDir());
-  if (getDriver().getInstalledDir() != getDriver().Dir)
-    getProgramPaths().push_back(getDriver().Dir);
 }
 
 void DarwinClang::addClangWarningOptions(ArgStringList &CC1Args) const {
@@ -400,7 +396,8 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     // it never went into the SDK.
     // Linking against libgcc_s.1 isn't needed for iOS 5.0+
     if (isIPhoneOSVersionLT(5, 0) && !isTargetIOSSimulator() &&
-        getTriple().getArch() != llvm::Triple::arm64)
+        (getTriple().getArch() != llvm::Triple::arm64 &&
+         getTriple().getArch() != llvm::Triple::aarch64))
       CmdArgs.push_back("-lgcc_s.1");
 
     // We currently always need a static runtime library for iOS.
@@ -449,7 +446,7 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
       if (llvm::sys::path::is_absolute(env) && llvm::sys::fs::exists(env) &&
           StringRef(env) != "/") {
         Args.append(Args.MakeSeparateArg(
-                      0, Opts.getOption(options::OPT_isysroot), env));
+                      nullptr, Opts.getOption(options::OPT_isysroot), env));
       }
     }
   }
@@ -463,12 +460,12 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     getDriver().Diag(diag::err_drv_argument_not_allowed_with)
           << OSXVersion->getAsString(Args)
           << (iOSVersion ? iOSVersion : iOSSimVersion)->getAsString(Args);
-    iOSVersion = iOSSimVersion = 0;
+    iOSVersion = iOSSimVersion = nullptr;
   } else if (iOSVersion && iOSSimVersion) {
     getDriver().Diag(diag::err_drv_argument_not_allowed_with)
           << iOSVersion->getAsString(Args)
           << iOSSimVersion->getAsString(Args);
-    iOSSimVersion = 0;
+    iOSSimVersion = nullptr;
   } else if (!OSXVersion && !iOSVersion && !iOSSimVersion) {
     // If no deployment target was specified on the command line, check for
     // environment defines.
@@ -520,6 +517,7 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     if (!OSXTarget.empty() && !iOSTarget.empty()) {
       if (getTriple().getArch() == llvm::Triple::arm ||
           getTriple().getArch() == llvm::Triple::arm64 ||
+          getTriple().getArch() == llvm::Triple::aarch64 ||
           getTriple().getArch() == llvm::Triple::thumb)
         OSXTarget = "";
       else
@@ -528,22 +526,22 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
 
     if (!OSXTarget.empty()) {
       const Option O = Opts.getOption(options::OPT_mmacosx_version_min_EQ);
-      OSXVersion = Args.MakeJoinedArg(0, O, OSXTarget);
+      OSXVersion = Args.MakeJoinedArg(nullptr, O, OSXTarget);
       Args.append(OSXVersion);
     } else if (!iOSTarget.empty()) {
       const Option O = Opts.getOption(options::OPT_miphoneos_version_min_EQ);
-      iOSVersion = Args.MakeJoinedArg(0, O, iOSTarget);
+      iOSVersion = Args.MakeJoinedArg(nullptr, O, iOSTarget);
       Args.append(iOSVersion);
     } else if (!iOSSimTarget.empty()) {
       const Option O = Opts.getOption(
         options::OPT_mios_simulator_version_min_EQ);
-      iOSSimVersion = Args.MakeJoinedArg(0, O, iOSSimTarget);
+      iOSSimVersion = Args.MakeJoinedArg(nullptr, O, iOSSimTarget);
       Args.append(iOSSimVersion);
     } else if (MachOArchName != "armv6m" && MachOArchName != "armv7m" &&
                MachOArchName != "armv7em") {
       // Otherwise, assume we are targeting OS X.
       const Option O = Opts.getOption(options::OPT_mmacosx_version_min_EQ);
-      OSXVersion = Args.MakeJoinedArg(0, O, MacosxVersionMin);
+      OSXVersion = Args.MakeJoinedArg(nullptr, O, MacosxVersionMin);
       Args.append(OSXVersion);
     }
   }
@@ -656,6 +654,7 @@ void DarwinClang::AddCCKextLibArgs(const ArgList &Args,
   // Use the newer cc_kext for iOS ARM after 6.0.
   if (!isTargetIPhoneOS() || isTargetIOSSimulator() ||
       getTriple().getArch() == llvm::Triple::arm64 ||
+      getTriple().getArch() == llvm::Triple::aarch64 ||
       !isIPhoneOSVersionLT(6, 0)) {
     llvm::sys::path::append(P, "libclang_rt.cc_kext.a");
   } else {
@@ -800,7 +799,8 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
   if (getTriple().getArch() == llvm::Triple::x86 ||
       getTriple().getArch() == llvm::Triple::x86_64)
     if (!Args.hasArgNoClaim(options::OPT_mtune_EQ))
-      DAL->AddJoinedArg(0, Opts.getOption(options::OPT_mtune_EQ), "core2");
+      DAL->AddJoinedArg(nullptr, Opts.getOption(options::OPT_mtune_EQ),
+                        "core2");
 
   // Add the arch options based on the particular spelling of -arch, to match
   // how the driver driver works.
@@ -814,76 +814,76 @@ DerivedArgList *MachO::TranslateArgs(const DerivedArgList &Args,
     if (Name == "ppc")
       ;
     else if (Name == "ppc601")
-      DAL->AddJoinedArg(0, MCpu, "601");
+      DAL->AddJoinedArg(nullptr, MCpu, "601");
     else if (Name == "ppc603")
-      DAL->AddJoinedArg(0, MCpu, "603");
+      DAL->AddJoinedArg(nullptr, MCpu, "603");
     else if (Name == "ppc604")
-      DAL->AddJoinedArg(0, MCpu, "604");
+      DAL->AddJoinedArg(nullptr, MCpu, "604");
     else if (Name == "ppc604e")
-      DAL->AddJoinedArg(0, MCpu, "604e");
+      DAL->AddJoinedArg(nullptr, MCpu, "604e");
     else if (Name == "ppc750")
-      DAL->AddJoinedArg(0, MCpu, "750");
+      DAL->AddJoinedArg(nullptr, MCpu, "750");
     else if (Name == "ppc7400")
-      DAL->AddJoinedArg(0, MCpu, "7400");
+      DAL->AddJoinedArg(nullptr, MCpu, "7400");
     else if (Name == "ppc7450")
-      DAL->AddJoinedArg(0, MCpu, "7450");
+      DAL->AddJoinedArg(nullptr, MCpu, "7450");
     else if (Name == "ppc970")
-      DAL->AddJoinedArg(0, MCpu, "970");
+      DAL->AddJoinedArg(nullptr, MCpu, "970");
 
     else if (Name == "ppc64" || Name == "ppc64le")
-      DAL->AddFlagArg(0, Opts.getOption(options::OPT_m64));
+      DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_m64));
 
     else if (Name == "i386")
       ;
     else if (Name == "i486")
-      DAL->AddJoinedArg(0, MArch, "i486");
+      DAL->AddJoinedArg(nullptr, MArch, "i486");
     else if (Name == "i586")
-      DAL->AddJoinedArg(0, MArch, "i586");
+      DAL->AddJoinedArg(nullptr, MArch, "i586");
     else if (Name == "i686")
-      DAL->AddJoinedArg(0, MArch, "i686");
+      DAL->AddJoinedArg(nullptr, MArch, "i686");
     else if (Name == "pentium")
-      DAL->AddJoinedArg(0, MArch, "pentium");
+      DAL->AddJoinedArg(nullptr, MArch, "pentium");
     else if (Name == "pentium2")
-      DAL->AddJoinedArg(0, MArch, "pentium2");
+      DAL->AddJoinedArg(nullptr, MArch, "pentium2");
     else if (Name == "pentpro")
-      DAL->AddJoinedArg(0, MArch, "pentiumpro");
+      DAL->AddJoinedArg(nullptr, MArch, "pentiumpro");
     else if (Name == "pentIIm3")
-      DAL->AddJoinedArg(0, MArch, "pentium2");
+      DAL->AddJoinedArg(nullptr, MArch, "pentium2");
 
     else if (Name == "x86_64")
-      DAL->AddFlagArg(0, Opts.getOption(options::OPT_m64));
+      DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_m64));
     else if (Name == "x86_64h") {
-      DAL->AddFlagArg(0, Opts.getOption(options::OPT_m64));
-      DAL->AddJoinedArg(0, MArch, "x86_64h");
+      DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_m64));
+      DAL->AddJoinedArg(nullptr, MArch, "x86_64h");
     }
 
     else if (Name == "arm")
-      DAL->AddJoinedArg(0, MArch, "armv4t");
+      DAL->AddJoinedArg(nullptr, MArch, "armv4t");
     else if (Name == "armv4t")
-      DAL->AddJoinedArg(0, MArch, "armv4t");
+      DAL->AddJoinedArg(nullptr, MArch, "armv4t");
     else if (Name == "armv5")
-      DAL->AddJoinedArg(0, MArch, "armv5tej");
+      DAL->AddJoinedArg(nullptr, MArch, "armv5tej");
     else if (Name == "xscale")
-      DAL->AddJoinedArg(0, MArch, "xscale");
+      DAL->AddJoinedArg(nullptr, MArch, "xscale");
     else if (Name == "armv6")
-      DAL->AddJoinedArg(0, MArch, "armv6k");
+      DAL->AddJoinedArg(nullptr, MArch, "armv6k");
     else if (Name == "armv6m")
-      DAL->AddJoinedArg(0, MArch, "armv6m");
+      DAL->AddJoinedArg(nullptr, MArch, "armv6m");
     else if (Name == "armv7")
-      DAL->AddJoinedArg(0, MArch, "armv7a");
+      DAL->AddJoinedArg(nullptr, MArch, "armv7a");
     else if (Name == "armv7em")
-      DAL->AddJoinedArg(0, MArch, "armv7em");
+      DAL->AddJoinedArg(nullptr, MArch, "armv7em");
     else if (Name == "armv7k")
-      DAL->AddJoinedArg(0, MArch, "armv7k");
+      DAL->AddJoinedArg(nullptr, MArch, "armv7k");
     else if (Name == "armv7m")
-      DAL->AddJoinedArg(0, MArch, "armv7m");
+      DAL->AddJoinedArg(nullptr, MArch, "armv7m");
     else if (Name == "armv7s")
-      DAL->AddJoinedArg(0, MArch, "armv7s");
+      DAL->AddJoinedArg(nullptr, MArch, "armv7s");
 
     else if (Name == "arm64")
-      DAL->AddJoinedArg(0, MArch, "arm64");
+      DAL->AddJoinedArg(nullptr, MArch, "arm64");
     else if (Name == "armv8")
-      DAL->AddJoinedArg(0, MArch, "arm64");
+      DAL->AddJoinedArg(nullptr, MArch, "arm64");
   }
 
   return DAL;
@@ -925,7 +925,8 @@ DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
   // but we can't check the deployment target in the translation code until
   // it is set here.
   if (isTargetIOSBased() && !isIPhoneOSVersionLT(6, 0) &&
-      getTriple().getArch() != llvm::Triple::arm64) {
+      getTriple().getArch() != llvm::Triple::arm64 &&
+      getTriple().getArch() != llvm::Triple::aarch64) {
     for (ArgList::iterator it = DAL->begin(), ie = DAL->end(); it != ie; ) {
       Arg *A = *it;
       ++it;
@@ -944,7 +945,8 @@ DerivedArgList *Darwin::TranslateArgs(const DerivedArgList &Args,
   if (((isTargetMacOS() && !isMacosxVersionLT(10, 9)) ||
        (isTargetIOSBased() && !isIPhoneOSVersionLT(7, 0))) &&
       !Args.getLastArg(options::OPT_stdlib_EQ))
-    DAL->AddJoinedArg(0, Opts.getOption(options::OPT_stdlib_EQ), "libc++");
+    DAL->AddJoinedArg(nullptr, Opts.getOption(options::OPT_stdlib_EQ),
+                      "libc++");
 
   // Validate the C++ standard library choice.
   CXXStdlibType Type = GetCXXStdlibType(*DAL);
@@ -991,7 +993,8 @@ bool MachO::isPIEDefault() const {
 
 bool MachO::isPICDefaultForced() const {
   return (getArch() == llvm::Triple::x86_64 ||
-          getArch() == llvm::Triple::arm64);
+          getArch() == llvm::Triple::arm64 ||
+          getArch() == llvm::Triple::aarch64);
 }
 
 bool MachO::SupportsProfiling() const {
@@ -1080,7 +1083,8 @@ void Darwin::addStartObjectFileArgs(const llvm::opt::ArgList &Args,
           if (isTargetIOSSimulator()) {
             ; // iOS simulator does not need crt1.o.
           } else if (isTargetIPhoneOS()) {
-            if (getArch() == llvm::Triple::arm64)
+            if (getArch() == llvm::Triple::arm64 ||
+                getArch() == llvm::Triple::aarch64)
               ; // iOS does not need any crt1 files for arm64
             else if (isIPhoneOSVersionLT(3, 1))
               CmdArgs.push_back("-lcrt1.o");
@@ -2013,7 +2017,7 @@ void Generic_GCC::GCCInstallationDetector::ScanLibDirForGCCTriple(
       (llvm::array_lengthof(LibSuffixes) - (TargetArch != llvm::Triple::x86));
   for (unsigned i = 0; i < NumLibSuffixes; ++i) {
     StringRef LibSuffix = LibSuffixes[i];
-    llvm::error_code EC;
+    std::error_code EC;
     for (llvm::sys::fs::directory_iterator LI(LibDir + LibSuffix, EC), LE;
          !EC && LI != LE; LI = LI.increment(EC)) {
       StringRef VersionText = llvm::sys::path::filename(LI->path());
@@ -2223,7 +2227,7 @@ Hexagon_TC::Hexagon_TC(const Driver &D, const llvm::Triple &Triple,
 
   // Determine version of GCC libraries and headers to use.
   const std::string HexagonDir(GnuDir + "/lib/gcc/hexagon");
-  llvm::error_code ec;
+  std::error_code ec;
   GCCVersion MaxVersion= GCCVersion::Parse("0.0.0");
   for (llvm::sys::fs::directory_iterator di(HexagonDir, ec), de;
        !ec && di != de; di = di.increment(ec)) {

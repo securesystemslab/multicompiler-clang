@@ -16,6 +16,7 @@
 
 #include "CGBuilder.h"
 #include "CGDebugInfo.h"
+#include "CGLoopInfo.h"
 #include "CGValue.h"
 #include "CodeGenModule.h"
 #include "CodeGenPGO.h"
@@ -103,13 +104,13 @@ public:
   /// A jump destination is an abstract label, branching to which may
   /// require a jump out through normal cleanups.
   struct JumpDest {
-    JumpDest() : Block(0), ScopeDepth(), Index(0) {}
+    JumpDest() : Block(nullptr), ScopeDepth(), Index(0) {}
     JumpDest(llvm::BasicBlock *Block,
              EHScopeStack::stable_iterator Depth,
              unsigned Index)
       : Block(Block), ScopeDepth(Depth), Index(Index) {}
 
-    bool isValid() const { return Block != 0; }
+    bool isValid() const { return Block != nullptr; }
     llvm::BasicBlock *getBlock() const { return Block; }
     EHScopeStack::stable_iterator getScopeDepth() const { return ScopeDepth; }
     unsigned getDestIndex() const { return Index; }
@@ -129,7 +130,14 @@ public:
   const TargetInfo &Target;
 
   typedef std::pair<llvm::Value *, llvm::Value *> ComplexPairTy;
+  LoopInfoStack LoopStack;
   CGBuilderTy Builder;
+
+  /// \brief CGBuilder insert helper. This function is called after an
+  /// instruction is created using Builder.
+  void InsertHelper(llvm::Instruction *I, const llvm::Twine &Name,
+                    llvm::BasicBlock *BB,
+                    llvm::BasicBlock::iterator InsertPt) const;
 
   /// CurFuncDecl - Holds the Decl for the current outermost
   /// non-closure context.
@@ -163,7 +171,7 @@ public:
   public:
     explicit CGCapturedStmtInfo(const CapturedStmt &S,
                                 CapturedRegionKind K = CR_Default)
-      : Kind(K), ThisValue(0), CXXThisFieldDecl(0) {
+      : Kind(K), ThisValue(nullptr), CXXThisFieldDecl(nullptr) {
 
       RecordDecl::field_iterator Field =
         S.getCapturedRecordDecl()->field_begin();
@@ -190,7 +198,7 @@ public:
       return CaptureFields.lookup(VD);
     }
 
-    bool isCXXThisExprCaptured() const { return CXXThisFieldDecl != 0; }
+    bool isCXXThisExprCaptured() const { return CXXThisFieldDecl != nullptr; }
     FieldDecl *getThisFieldDecl() const { return CXXThisFieldDecl; }
 
     /// \brief Emit the captured statement body.
@@ -611,9 +619,9 @@ public:
     }
 
     void end(CodeGenFunction &CGF) {
-      assert(CGF.OutermostConditional != 0);
+      assert(CGF.OutermostConditional != nullptr);
       if (CGF.OutermostConditional == this)
-        CGF.OutermostConditional = 0;
+        CGF.OutermostConditional = nullptr;
     }
 
     /// Returns a block which will be executed prior to each
@@ -625,7 +633,7 @@ public:
 
   /// isInConditionalBranch - Return true if we're currently emitting
   /// one branch or the other of a conditional expression.
-  bool isInConditionalBranch() const { return OutermostConditional != 0; }
+  bool isInConditionalBranch() const { return OutermostConditional != nullptr; }
 
   void setBeforeOutermostConditional(llvm::Value *value, llvm::Value *addr) {
     assert(isInConditionalBranch());
@@ -646,7 +654,7 @@ public:
   public:
     StmtExprEvaluation(CodeGenFunction &CGF)
       : CGF(CGF), SavedOutermostConditional(CGF.OutermostConditional) {
-      CGF.OutermostConditional = 0;
+      CGF.OutermostConditional = nullptr;
     }
 
     ~StmtExprEvaluation() {
@@ -663,7 +671,7 @@ public:
     friend class CodeGenFunction;
 
   public:
-    PeepholeProtection() : Inst(0) {}
+    PeepholeProtection() : Inst(nullptr) {}
   };
 
   /// A non-RAII class containing all the information about a bound
@@ -681,7 +689,7 @@ public:
                            bool boundLValue)
       : OpaqueValue(ov), BoundLValue(boundLValue) {}
   public:
-    OpaqueValueMappingData() : OpaqueValue(0) {}
+    OpaqueValueMappingData() : OpaqueValue(nullptr) {}
 
     static bool shouldBindAsLValue(const Expr *expr) {
       // gl-values should be bound as l-values for obvious reasons.
@@ -726,8 +734,8 @@ public:
       return data;
     }
 
-    bool isValid() const { return OpaqueValue != 0; }
-    void clear() { OpaqueValue = 0; }
+    bool isValid() const { return OpaqueValue != nullptr; }
+    void clear() { OpaqueValue = nullptr; }
 
     void unbind(CodeGenFunction &CGF) {
       assert(OpaqueValue && "no data to unbind!");
@@ -970,7 +978,7 @@ public:
   ASTContext &getContext() const { return CGM.getContext(); }
   CGDebugInfo *getDebugInfo() { 
     if (DisableDebugInfo) 
-      return NULL;
+      return nullptr;
     return DebugInfo; 
   }
   void disableDebugInfo() { DisableDebugInfo = true; }
@@ -1003,7 +1011,7 @@ public:
   }
 
   llvm::BasicBlock *getInvokeDest() {
-    if (!EHStack.requiresLandingPad()) return 0;
+    if (!EHStack.requiresLandingPad()) return nullptr;
     return getInvokeDestImpl();
   }
 
@@ -1291,8 +1299,8 @@ public:
 
   /// createBasicBlock - Create an LLVM basic block.
   llvm::BasicBlock *createBasicBlock(const Twine &name = "",
-                                     llvm::Function *parent = 0,
-                                     llvm::BasicBlock *before = 0) {
+                                     llvm::Function *parent = nullptr,
+                                     llvm::BasicBlock *before = nullptr) {
 #ifdef NDEBUG
     return llvm::BasicBlock::Create(getLLVMContext(), "", parent, before);
 #else
@@ -1336,7 +1344,7 @@ public:
   /// HaveInsertPoint - True if an insertion point is defined. If not, this
   /// indicates that the current code being emitted is unreachable.
   bool HaveInsertPoint() const {
-    return Builder.GetInsertBlock() != 0;
+    return Builder.GetInsertBlock() != nullptr;
   }
 
   /// EnsureInsertPoint - Ensure that an insertion point is defined so that
@@ -1639,7 +1647,8 @@ public:
                              llvm::Value *This);
 
   void EmitNewArrayInitializer(const CXXNewExpr *E, QualType elementType,
-                               llvm::Value *NewPtr, llvm::Value *NumElements);
+                               llvm::Value *NewPtr, llvm::Value *NumElements,
+                               llvm::Value *AllocSizeWithoutCookie);
 
   void EmitCXXTemporary(const CXXTemporary *Temporary, QualType TempType,
                         llvm::Value *Ptr);
@@ -1649,6 +1658,9 @@ public:
 
   void EmitDeleteCall(const FunctionDecl *DeleteFD, llvm::Value *Ptr,
                       QualType DeleteTy);
+
+  RValue EmitBuiltinNewDeleteCall(const FunctionProtoType *Type,
+                                  const Expr *Arg, bool IsDelete);
 
   llvm::Value* EmitCXXTypeidExpr(const CXXTypeidExpr *E);
   llvm::Value *EmitDynamicCast(llvm::Value *V, const CXXDynamicCastExpr *DCE);
@@ -1747,19 +1759,21 @@ public:
     llvm::Value *SizeForLifetimeMarkers;
 
     struct Invalid {};
-    AutoVarEmission(Invalid) : Variable(0) {}
+    AutoVarEmission(Invalid) : Variable(nullptr) {}
 
     AutoVarEmission(const VarDecl &variable)
-      : Variable(&variable), Address(0), NRVOFlag(0),
+      : Variable(&variable), Address(nullptr), NRVOFlag(nullptr),
         IsByRef(false), IsConstantAggregate(false),
-        SizeForLifetimeMarkers(0) {}
+        SizeForLifetimeMarkers(nullptr) {}
 
-    bool wasEmittedAsGlobal() const { return Address == 0; }
+    bool wasEmittedAsGlobal() const { return Address == nullptr; }
 
   public:
     static AutoVarEmission invalid() { return AutoVarEmission(Invalid()); }
 
-    bool useLifetimeMarkers() const { return SizeForLifetimeMarkers != 0; }
+    bool useLifetimeMarkers() const {
+      return SizeForLifetimeMarkers != nullptr;
+    }
     llvm::Value *getSizeForLifetimeMarkers() const {
       assert(useLifetimeMarkers());
       return SizeForLifetimeMarkers;
@@ -1846,9 +1860,14 @@ public:
   void EmitGotoStmt(const GotoStmt &S);
   void EmitIndirectGotoStmt(const IndirectGotoStmt &S);
   void EmitIfStmt(const IfStmt &S);
-  void EmitWhileStmt(const WhileStmt &S);
-  void EmitDoStmt(const DoStmt &S);
-  void EmitForStmt(const ForStmt &S);
+
+  void EmitCondBrHints(llvm::LLVMContext &Context, llvm::BranchInst *CondBr,
+                       const ArrayRef<const Attr *> &Attrs);
+  void EmitWhileStmt(const WhileStmt &S,
+                     const ArrayRef<const Attr *> &Attrs = None);
+  void EmitDoStmt(const DoStmt &S, const ArrayRef<const Attr *> &Attrs = None);
+  void EmitForStmt(const ForStmt &S,
+                   const ArrayRef<const Attr *> &Attrs = None);
   void EmitReturnStmt(const ReturnStmt &S);
   void EmitDeclStmt(const DeclStmt &S);
   void EmitBreakStmt(const BreakStmt &S);
@@ -1872,7 +1891,8 @@ public:
 
   void EmitCXXTryStmt(const CXXTryStmt &S);
   void EmitSEHTryStmt(const SEHTryStmt &S);
-  void EmitCXXForRangeStmt(const CXXForRangeStmt &S);
+  void EmitCXXForRangeStmt(const CXXForRangeStmt &S,
+                           const ArrayRef<const Attr *> &Attrs = None);
 
   llvm::Function *EmitCapturedStmt(const CapturedStmt &S, CapturedRegionKind K);
   llvm::Function *GenerateCapturedStmtFunction(const CapturedDecl *CD,
@@ -1881,6 +1901,8 @@ public:
   llvm::Value *GenerateCapturedStmtArgument(const CapturedStmt &S);
 
   void EmitOMPParallelDirective(const OMPParallelDirective &S);
+  void EmitOMPSimdDirective(const OMPSimdDirective &S);
+  void EmitOMPForDirective(const OMPForDirective &S);
 
   //===--------------------------------------------------------------------===//
   //                         LValue Expression Emission
@@ -1947,7 +1969,7 @@ public:
   llvm::Value *EmitLoadOfScalar(llvm::Value *Addr, bool Volatile,
                                 unsigned Alignment, QualType Ty,
                                 SourceLocation Loc,
-                                llvm::MDNode *TBAAInfo = 0,
+                                llvm::MDNode *TBAAInfo = nullptr,
                                 QualType TBAABaseTy = QualType(),
                                 uint64_t TBAAOffset = 0);
 
@@ -1962,7 +1984,7 @@ public:
   /// the LLVM value representation.
   void EmitStoreOfScalar(llvm::Value *Value, llvm::Value *Addr,
                          bool Volatile, unsigned Alignment, QualType Ty,
-                         llvm::MDNode *TBAAInfo = 0, bool isInit = false,
+                         llvm::MDNode *TBAAInfo = nullptr, bool isInit = false,
                          QualType TBAABaseTy = QualType(),
                          uint64_t TBAAOffset = 0);
 
@@ -1979,12 +2001,14 @@ public:
   RValue EmitLoadOfLValue(LValue V, SourceLocation Loc);
   RValue EmitLoadOfExtVectorElementLValue(LValue V);
   RValue EmitLoadOfBitfieldLValue(LValue LV);
+  RValue EmitLoadOfGlobalRegLValue(LValue LV);
 
   /// EmitStoreThroughLValue - Store the specified rvalue into the specified
   /// lvalue, where both are guaranteed to the have the same type, and that type
   /// is 'Ty'.
   void EmitStoreThroughLValue(RValue Src, LValue Dst, bool isInit=false);
   void EmitStoreThroughExtVectorComponentLValue(RValue Src, LValue Dst);
+  void EmitStoreThroughGlobalRegLValue(RValue Src, LValue Dst);
 
   /// EmitStoreThroughBitfieldLValue - Store Src into Dst with same constraints
   /// as EmitStoreThroughLValue.
@@ -1993,7 +2017,7 @@ public:
   /// bit-field contents after the store, appropriate for use as the result of
   /// an assignment to the bit-field.
   void EmitStoreThroughBitfieldLValue(RValue Src, LValue Dst,
-                                      llvm::Value **Result=0);
+                                      llvm::Value **Result=nullptr);
 
   /// Emit an l-value for an assignment (simple or compound) of complex type.
   LValue EmitComplexAssignmentLValue(const BinaryOperator *E);
@@ -2009,6 +2033,7 @@ public:
   // Note: only available for agg return types
   LValue EmitVAArgExprLValue(const VAArgExpr *E);
   LValue EmitDeclRefLValue(const DeclRefExpr *E);
+  LValue EmitReadRegister(const VarDecl *VD);
   LValue EmitStringLiteralLValue(const StringLiteral *E);
   LValue EmitObjCEncodeExprLValue(const ObjCEncodeExpr *E);
   LValue EmitPredefinedLValue(const PredefinedExpr *E);
@@ -2040,7 +2065,9 @@ public:
       return ConstantEmission(C, false);
     }
 
-    LLVM_EXPLICIT operator bool() const { return ValueAndIsReference.getOpaqueValue() != 0; }
+    LLVM_EXPLICIT operator bool() const {
+      return ValueAndIsReference.getOpaqueValue() != nullptr;
+    }
 
     bool isReference() const { return ValueAndIsReference.getInt(); }
     LValue getReferenceLValue(CodeGenFunction &CGF, Expr *refExpr) const {
@@ -2103,15 +2130,15 @@ public:
                   llvm::Value *Callee,
                   ReturnValueSlot ReturnValue,
                   const CallArgList &Args,
-                  const Decl *TargetDecl = 0,
-                  llvm::Instruction **callOrInvoke = 0);
+                  const Decl *TargetDecl = nullptr,
+                  llvm::Instruction **callOrInvoke = nullptr);
 
   RValue EmitCall(QualType FnType, llvm::Value *Callee,
                   SourceLocation CallLoc,
                   ReturnValueSlot ReturnValue,
                   CallExpr::const_arg_iterator ArgBeg,
                   CallExpr::const_arg_iterator ArgEnd,
-                  const Decl *TargetDecl = 0);
+                  const Decl *TargetDecl = nullptr);
   RValue EmitCallExpr(const CallExpr *E,
                       ReturnValueSlot ReturnValue = ReturnValueSlot());
 
@@ -2185,8 +2212,6 @@ public:
                                              const llvm::CmpInst::Predicate Fp,
                                              const llvm::CmpInst::Predicate Ip,
                                              const llvm::Twine &Name = "");
-  llvm::Value *EmitAArch64CompareBuiltinExpr(llvm::Value *Op, llvm::Type *Ty);
-  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitARMBuiltinExpr(unsigned BuiltinID, const CallExpr *E);
 
   llvm::Value *EmitCommonNeonBuiltinExpr(unsigned BuiltinID,
@@ -2196,7 +2221,7 @@ public:
                                          unsigned Modifier,
                                          const CallExpr *E,
                                          SmallVectorImpl<llvm::Value *> &Ops,
-                                         llvm::Value *Align = 0);
+                                         llvm::Value *Align = nullptr);
   llvm::Function *LookupNeonLLVMIntrinsic(unsigned IntrinsicID,
                                           unsigned Modifier, llvm::Type *ArgTy,
                                           const CallExpr *E);
@@ -2212,14 +2237,14 @@ public:
   llvm::Value *EmitConcatVectors(llvm::Value *Lo, llvm::Value *Hi,
                                  llvm::Type *ArgTy);
   llvm::Value *EmitExtractHigh(llvm::Value *In, llvm::Type *ResTy);
-  // Helper functions for EmitARM64BuiltinExpr.
+  // Helper functions for EmitAArch64BuiltinExpr.
   llvm::Value *vectorWrapScalar8(llvm::Value *Op);
   llvm::Value *vectorWrapScalar16(llvm::Value *Op);
   llvm::Value *emitVectorWrappedScalar8Intrinsic(
       unsigned Int, SmallVectorImpl<llvm::Value *> &Ops, const char *Name);
   llvm::Value *emitVectorWrappedScalar16Intrinsic(
       unsigned Int, SmallVectorImpl<llvm::Value *> &Ops, const char *Name);
-  llvm::Value *EmitARM64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
+  llvm::Value *EmitAArch64BuiltinExpr(unsigned BuiltinID, const CallExpr *E);
   llvm::Value *EmitNeon64Call(llvm::Function *F,
                               llvm::SmallVectorImpl<llvm::Value *> &O,
                               const char *name);
@@ -2394,7 +2419,7 @@ public:
   /// variables.
   void GenerateCXXGlobalInitFunc(llvm::Function *Fn,
                                  ArrayRef<llvm::Constant *> Decls,
-                                 llvm::GlobalVariable *Guard = 0);
+                                 llvm::GlobalVariable *Guard = nullptr);
 
   /// GenerateCXXGlobalDtorsFunc - Generates code for destroying global
   /// variables.
@@ -2422,7 +2447,7 @@ public:
 
   void EmitLambdaExpr(const LambdaExpr *E, AggValueSlot Dest);
 
-  RValue EmitAtomicExpr(AtomicExpr *E, llvm::Value *Dest = 0);
+  RValue EmitAtomicExpr(AtomicExpr *E, llvm::Value *Dest = nullptr);
 
   //===--------------------------------------------------------------------===//
   //                         Annotations Emission
@@ -2568,7 +2593,7 @@ public:
                    ForceColumnInfo);
     } else {
       // T::param_type_iterator might not have a default ctor.
-      const QualType *NoIter = 0;
+      const QualType *NoIter = nullptr;
       EmitCallArgs(Args, /*AllowExtraArguments=*/true, NoIter, NoIter, ArgBeg,
                    ArgEnd, ForceColumnInfo);
     }
@@ -2626,7 +2651,8 @@ public:
 
   void EmitCallArgs(CallArgList &Args, ArrayRef<QualType> ArgTypes,
                     CallExpr::const_arg_iterator ArgBeg,
-                    CallExpr::const_arg_iterator ArgEnd, bool ForceColumnInfo);
+                    CallExpr::const_arg_iterator ArgEnd,
+                    bool ForceColumnInfo = false);
 
 private:
   const TargetCodeGenInfo &getTargetHooks() const {

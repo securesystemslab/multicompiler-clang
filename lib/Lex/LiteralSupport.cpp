@@ -195,7 +195,7 @@ static unsigned ProcessCharEscape(const char *ThisTokBegin,
         << std::string(1, ResultChar);
     break;
   default:
-    if (Diags == 0)
+    if (!Diags)
       break;
 
     if (isPrintable(ResultChar))
@@ -340,7 +340,7 @@ static int MeasureUCNEscape(const char *ThisTokBegin, const char *&ThisTokBuf,
   FullSourceLoc Loc;
 
   if (!ProcessUCNEscape(ThisTokBegin, ThisTokBuf, ThisTokEnd, UcnVal,
-                        UcnLen, Loc, 0, Features, true)) {
+                        UcnLen, Loc, nullptr, Features, true)) {
     HadError = true;
     return 0;
   }
@@ -571,7 +571,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
   // Parse the suffix.  At this point we can classify whether we have an FP or
   // integer constant.
   bool isFPConstant = isFloatingLiteral();
-  const char *ImaginarySuffixLoc = 0;
+  const char *ImaginarySuffixLoc = nullptr;
 
   // Loop over all of the characters of the suffix.  If we see something bad,
   // we break out of the loop.
@@ -606,16 +606,18 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
     case 'i':
     case 'I':
       if (PP.getLangOpts().MicrosoftExt) {
-        if (isFPConstant || isLong || isLongLong) break;
+        if (isLong || isLongLong) break;
 
         // Allow i8, i16, i32, i64, and i128.
         if (s + 1 != ThisTokEnd) {
           switch (s[1]) {
             case '8':
+              if (isFPConstant) break;
               s += 2; // i8 suffix
               isMicrosoftInteger = true;
               break;
             case '1':
+              if (isFPConstant) break;
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '6') {
                 s += 3; // i16 suffix
@@ -630,6 +632,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
               }
               break;
             case '3':
+              if (isFPConstant) break;
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '2') {
                 s += 3; // i32 suffix
@@ -638,6 +641,7 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
               }
               break;
             case '6':
+              if (isFPConstant) break;
               if (s + 2 == ThisTokEnd) break;
               if (s[2] == '4') {
                 s += 3; // i64 suffix
@@ -648,7 +652,8 @@ NumericLiteralParser::NumericLiteralParser(StringRef TokSpelling,
             default:
               break;
           }
-          break;
+          if (isMicrosoftInteger)
+            break;
         }
       }
       // "i", "if", and "il" are user-defined suffixes in C++1y.
@@ -1254,7 +1259,7 @@ StringLiteralParser::
 StringLiteralParser(const Token *StringToks, unsigned NumStringToks,
                     Preprocessor &PP, bool Complain)
   : SM(PP.getSourceManager()), Features(PP.getLangOpts()),
-    Target(PP.getTargetInfo()), Diags(Complain ? &PP.getDiagnostics() : 0),
+    Target(PP.getTargetInfo()), Diags(Complain ? &PP.getDiagnostics() :nullptr),
     MaxTokenLength(0), SizeBound(0), CharByteWidth(0), Kind(tok::unknown),
     ResultPtr(ResultBuf.data()), hadError(false), Pascal(false) {
   init(StringToks, NumStringToks);
@@ -1577,8 +1582,7 @@ bool StringLiteralParser::CopyStringFragment(const Token &Tok,
     Dummy.reserve(Fragment.size() * CharByteWidth);
     char *Ptr = Dummy.data();
 
-    while (!Builder.hasMaxRanges() &&
-           !ConvertUTF8toWide(CharByteWidth, NextFragment, Ptr, ErrorPtrTmp)) {
+    while (!ConvertUTF8toWide(CharByteWidth, NextFragment, Ptr, ErrorPtrTmp)) {
       const char *ErrorPtr = reinterpret_cast<const char *>(ErrorPtrTmp);
       NextStart = resyncUTF8(ErrorPtr, Fragment.end());
       Builder << MakeCharSourceRange(Features, SourceLoc, TokBegin,

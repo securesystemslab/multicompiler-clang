@@ -68,7 +68,8 @@ FallbackStyle("fallback-style",
               cl::desc("The name of the predefined style used as a\n"
                        "fallback in case clang-format is invoked with\n"
                        "-style=file, but can not find the .clang-format\n"
-                       "file to use."),
+                       "file to use.\n"
+                       "Use -fallback-style=none to skip formatting."),
               cl::init("LLVM"), cl::cat(ClangFormatCategory));
 
 static cl::opt<std::string>
@@ -209,7 +210,7 @@ static bool format(StringRef FileName) {
       new DiagnosticOptions);
   SourceManager Sources(Diagnostics, Files);
   std::unique_ptr<MemoryBuffer> Code;
-  if (error_code ec = MemoryBuffer::getFileOrSTDIN(FileName, Code)) {
+  if (std::error_code ec = MemoryBuffer::getFileOrSTDIN(FileName, Code)) {
     llvm::errs() << ec.message() << "\n";
     return true;
   }

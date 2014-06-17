@@ -30,7 +30,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 using namespace clang;
 
 namespace {
@@ -123,7 +123,7 @@ public:
 
 } // end anonymous namespace
 
-FrontendAction::FrontendAction() : Instance(0) {}
+FrontendAction::FrontendAction() : Instance(nullptr) {}
 
 FrontendAction::~FrontendAction() {}
 
@@ -137,7 +137,7 @@ ASTConsumer* FrontendAction::CreateWrappedASTConsumer(CompilerInstance &CI,
                                                       StringRef InFile) {
   ASTConsumer* Consumer = CreateASTConsumer(CI, InFile);
   if (!Consumer)
-    return 0;
+    return nullptr;
 
   if (CI.getFrontendOpts().AddPluginActions.size() == 0)
     return Consumer;
@@ -196,7 +196,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     setCurrentInput(Input, AST);
 
     // Inform the diagnostic client we are processing a source file.
-    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), 0);
+    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), nullptr);
     HasBegunSourceFile = true;
 
     // Set the shared objects, these are reset when we finish processing the
@@ -239,7 +239,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
            "This action does not have IR file support!");
 
     // Inform the diagnostic client we are processing a source file.
-    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), 0);
+    CI.getDiagnosticClient().BeginSourceFile(CI.getLangOpts(), nullptr);
     HasBegunSourceFile = true;
 
     // Initialize the action.
@@ -260,7 +260,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     PreprocessorOptions &PPOpts = CI.getPreprocessorOpts();
     StringRef PCHInclude = PPOpts.ImplicitPCHInclude;
     if (const DirectoryEntry *PCHDir = FileMgr.getDirectory(PCHInclude)) {
-      llvm::error_code EC;
+      std::error_code EC;
       SmallString<128> DirNative;
       llvm::sys::path::native(PCHDir->getName(), DirNative);
       bool Found = false;
@@ -358,8 +358,21 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
   // source.
   if (!CI.hasASTContext() || !CI.getASTContext().getExternalSource()) {
     Preprocessor &PP = CI.getPreprocessor();
+
+    // If modules are enabled, create the module manager before creating
+    // any builtins, so that all declarations know that they might be
+    // extended by an external source.
+    if (CI.getLangOpts().Modules)
+      CI.createModuleManager();
+
     PP.getBuiltinInfo().InitializeBuiltins(PP.getIdentifierTable(),
                                            PP.getLangOpts());
+  } else {
+    // FIXME: If this is a problem, recover from it by creating a multiplex
+    // source.
+    assert((!CI.getLangOpts().Modules || CI.getModuleManager()) &&
+           "modules enabled but created an external source that "
+           "doesn't support modules");
   }
 
   // If there is a layout overrides file, attach an external AST source that
@@ -371,24 +384,24 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
                      CI.getFrontendOpts().OverrideRecordLayoutsFile));
     CI.getASTContext().setExternalSource(Override);
   }
-  
+
   return true;
 
   // If we failed, reset state since the client will not end up calling the
   // matching EndSourceFile().
   failure:
   if (isCurrentFileAST()) {
-    CI.setASTContext(0);
-    CI.setPreprocessor(0);
-    CI.setSourceManager(0);
-    CI.setFileManager(0);
+    CI.setASTContext(nullptr);
+    CI.setPreprocessor(nullptr);
+    CI.setSourceManager(nullptr);
+    CI.setFileManager(nullptr);
   }
 
   if (HasBegunSourceFile)
     CI.getDiagnosticClient().EndSourceFile();
   CI.clearOutputFiles(/*EraseFiles=*/true);
   setCurrentInput(FrontendInputFile());
-  setCompilerInstance(0);
+  setCompilerInstance(nullptr);
   return false;
 }
 
@@ -434,10 +447,10 @@ void FrontendAction::EndSourceFile() {
     BuryPointer(CI.takeASTConsumer());
   } else {
     if (!isCurrentFileAST()) {
-      CI.setSema(0);
-      CI.setASTContext(0);
+      CI.setSema(nullptr);
+      CI.setASTContext(nullptr);
     }
-    CI.setASTConsumer(0);
+    CI.setASTConsumer(nullptr);
   }
 
   // Inform the preprocessor we are done.
@@ -466,7 +479,7 @@ void FrontendAction::EndSourceFile() {
     CI.resetAndLeakFileManager();
   }
 
-  setCompilerInstance(0);
+  setCompilerInstance(nullptr);
   setCurrentInput(FrontendInputFile());
 }
 
@@ -490,7 +503,7 @@ void ASTFrontendAction::ExecuteAction() {
     CI.createCodeCompletionConsumer();
 
   // Use a code completion consumer?
-  CodeCompleteConsumer *CompletionConsumer = 0;
+  CodeCompleteConsumer *CompletionConsumer = nullptr;
   if (CI.hasCodeCompletionConsumer())
     CompletionConsumer = &CI.getCodeCompletionConsumer();
 

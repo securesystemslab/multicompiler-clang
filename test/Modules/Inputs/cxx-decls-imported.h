@@ -18,3 +18,8 @@ private:
 
 static_assert(!__is_trivial(HasNontrivialDefaultConstructor), "");
 static_assert(!__has_trivial_constructor(HasNontrivialDefaultConstructor), "");
+
+void *operator new[](__SIZE_TYPE__);
+
+extern int mergeUsedFlag;
+inline int getMergeUsedFlag() { return mergeUsedFlag; }

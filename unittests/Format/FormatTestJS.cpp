@@ -31,7 +31,9 @@ protected:
     return Result;
   }
 
-  static std::string format(llvm::StringRef Code, const FormatStyle &Style) {
+  static std::string format(
+      llvm::StringRef Code,
+      const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_JavaScript)) {
     return format(Code, 0, Code.size(), Style);
   }
 
@@ -77,11 +79,48 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
                "            bbbbbb :\n"
                "            ccc;",
                getGoogleJSStyleWithColumns(20));
+
+  verifyFormat("var b = a.map((x) => x + 1);");
+}
+
+TEST_F(FormatTestJS, ES6DestructuringAssignment) {
+  verifyFormat("var [a, b, c] = [1, 2, 3];");
+  verifyFormat("var {a, b} = {a: 1, b: 2};");
+}
+
+TEST_F(FormatTestJS, ContainerLiterals) {
+  verifyFormat("return {\n"
+               "  link: function() {\n"
+               "    f();  //\n"
+               "  }\n"
+               "};");
+  verifyFormat("return {\n"
+               "  a: a,\n"
+               "  link: function() {\n"
+               "    f();  //\n"
+               "  }\n"
+               "};");
+  verifyFormat("return {\n"
+               "  a: a,\n"
+               "  link:\n"
+               "      function() {\n"
+               "        f();  //\n"
+               "      },\n"
+               "  link:\n"
+               "      function() {\n"
+               "        f();  //\n"
+               "      }\n"
+               "};");
 }
 
 TEST_F(FormatTestJS, SpacesInContainerLiterals) {
   verifyFormat("var arr = [1, 2, 3];");
   verifyFormat("var obj = {a: 1, b: 2, c: 3};");
+
+  verifyFormat("var object_literal_with_long_name = {\n"
+               "  a: 'aaaaaaaaaaaaaaaaaa',\n"
+               "  b: 'bbbbbbbbbbbbbbbbbb'\n"
+               "};");
 
   verifyFormat("var obj = {a: 1, b: 2, c: 3};",
                getChromiumStyle(FormatStyle::LK_JavaScript));
@@ -99,7 +138,7 @@ TEST_F(FormatTestJS, GoogScopes) {
                "});  // goog.scope");
 }
 
-TEST_F(FormatTestJS, Closures) {
+TEST_F(FormatTestJS, FunctionLiterals) {
   verifyFormat("doFoo(function() { return 1; });");
   verifyFormat("var func = function() { return 1; };");
   verifyFormat("return {\n"
@@ -109,6 +148,75 @@ TEST_F(FormatTestJS, Closures) {
                "    style: {direction: ''}\n"
                "  }\n"
                "};");
+  EXPECT_EQ("abc = xyz ? function() { return 1; } : function() { return -1; };",
+            format("abc=xyz?function(){return 1;}:function(){return -1;};"));
+
+  verifyFormat("var closure = goog.bind(\n"
+               "    function() {  // comment\n"
+               "      foo();\n"
+               "      bar();\n"
+               "    },\n"
+               "    this, arg1IsReallyLongAndNeeedsLineBreaks,\n"
+               "    arg3IsReallyLongAndNeeedsLineBreaks);");
+  verifyFormat("var closure = goog.bind(function() {  // comment\n"
+               "  foo();\n"
+               "  bar();\n"
+               "}, this);");
+  verifyFormat("return {\n"
+               "  a: 'E',\n"
+               "  b: function() {\n"
+               "    return function() {\n"
+               "      f();  //\n"
+               "    };\n"
+               "  }\n"
+               "};");
+
+  verifyFormat("var x = {a: function() { return 1; }};",
+               getGoogleJSStyleWithColumns(38));
+  verifyFormat("var x = {\n"
+               "  a: function() { return 1; }\n"
+               "};",
+               getGoogleJSStyleWithColumns(37));
+
+  verifyFormat("return {\n"
+               "  a: function SomeFunction() {\n"
+               "    // ...\n"
+               "    return 1;\n"
+               "  }\n"
+               "};");
+}
+
+TEST_F(FormatTestJS, MultipleFunctionLiterals) {
+  verifyFormat("promise.then(\n"
+               "    function success() {\n"
+               "      doFoo();\n"
+               "      doBar();\n"
+               "    },\n"
+               "    function error() {\n"
+               "      doFoo();\n"
+               "      doBaz();\n"
+               "    },\n"
+               "    []);\n");
+  verifyFormat("promise.then(\n"
+               "    function success() {\n"
+               "      doFoo();\n"
+               "      doBar();\n"
+               "    },\n"
+               "    [],\n"
+               "    function error() {\n"
+               "      doFoo();\n"
+               "      doBaz();\n"
+               "    });\n");
+  // FIXME: Here, we should probably break right after the "(" for consistency.
+  verifyFormat("promise.then([],\n"
+               "             function success() {\n"
+               "               doFoo();\n"
+               "               doBar();\n"
+               "             },\n"
+               "             function error() {\n"
+               "               doFoo();\n"
+               "               doBaz();\n"
+               "             });\n");
 }
 
 TEST_F(FormatTestJS, ReturnStatements) {
@@ -127,6 +235,11 @@ TEST_F(FormatTestJS, TryCatch) {
                "} finally {\n"
                "  h();\n"
                "}");
+}
+
+TEST_F(FormatTestJS, StringLiteralConcatenation) {
+  verifyFormat("var literal = 'hello ' +\n"
+               "              'world';");
 }
 
 TEST_F(FormatTestJS, RegexLiteralClassification) {

@@ -48,7 +48,7 @@ class VoidModuleLoader : public ModuleLoader {
                          bool Complain) override { }
 
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override
-    { return 0; }
+    { return nullptr; }
   bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override
     { return 0; };
 };
@@ -163,7 +163,7 @@ protected:
   CharSourceRange InclusionDirectiveFilenameRange(const char* SourceText, 
       const char* HeaderPath, bool SystemHeader) {
     MemoryBuffer *Buf = MemoryBuffer::getMemBuffer(SourceText);
-    (void)SourceMgr.createMainFileIDForMemBuffer(Buf);
+    SourceMgr.setMainFileID(SourceMgr.createFileID(Buf));
 
     VoidModuleLoader ModLoader;
 
@@ -174,7 +174,7 @@ protected:
 
     IntrusiveRefCntPtr<PreprocessorOptions> PPOpts = new PreprocessorOptions();
     Preprocessor PP(PPOpts, Diags, LangOpts, SourceMgr, HeaderInfo, ModLoader,
-                    /*IILookup =*/0,
+                    /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
     InclusionDirectiveCallbacks* Callbacks = new InclusionDirectiveCallbacks;
@@ -200,14 +200,14 @@ protected:
     OpenCLLangOpts.OpenCL = 1;
 
     MemoryBuffer* sourceBuf = MemoryBuffer::getMemBuffer(SourceText, "test.cl");
-    (void)SourceMgr.createMainFileIDForMemBuffer(sourceBuf);
+    SourceMgr.setMainFileID(SourceMgr.createFileID(sourceBuf));
 
     VoidModuleLoader ModLoader;
     HeaderSearch HeaderInfo(new HeaderSearchOptions, SourceMgr, Diags, 
                             OpenCLLangOpts, Target.getPtr());
 
     Preprocessor PP(new PreprocessorOptions(), Diags, OpenCLLangOpts, SourceMgr,
-                    HeaderInfo, ModLoader, /*IILookup =*/0,
+                    HeaderInfo, ModLoader, /*IILookup =*/nullptr,
                     /*OwnsHeaderSearch =*/false);
     PP.Initialize(*Target);
 

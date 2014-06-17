@@ -542,7 +542,10 @@ namespace clang {
       UNDEFINED_BUT_USED = 49,
 
       /// \brief Record code for late parsed template functions.
-      LATE_PARSED_TEMPLATE = 50
+      LATE_PARSED_TEMPLATE = 50,
+
+      /// \brief Record code for \#pragma optimize options.
+      OPTIMIZE_PRAGMA_OPTIONS = 51
     };
 
     /// \brief Record types used within a source manager block.
@@ -1338,6 +1341,7 @@ namespace clang {
       // OpenMP drectives
       STMT_OMP_PARALLEL_DIRECTIVE,
       STMT_OMP_SIMD_DIRECTIVE,
+      STMT_OMP_FOR_DIRECTIVE,
 
       // ARC
       EXPR_OBJC_BRIDGED_CAST,     // ObjCBridgedCastExpr

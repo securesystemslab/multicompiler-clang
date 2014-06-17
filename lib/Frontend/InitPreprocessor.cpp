@@ -86,7 +86,7 @@ static void AddImplicitIncludePTH(MacroBuilder &Builder, Preprocessor &PP,
                                   StringRef ImplicitIncludePTH) {
   PTHManager *P = PP.getPTHManager();
   // Null check 'P' in the corner case where it couldn't be created.
-  const char *OriginalFile = P ? P->getOriginalSourceFile() : 0;
+  const char *OriginalFile = P ? P->getOriginalSourceFile() : nullptr;
 
   if (!OriginalFile) {
     PP.getDiagnostics().Report(diag::err_fe_pth_file_has_no_source_header)
@@ -315,10 +315,13 @@ static void InitializeStandardPredefinedMacros(const TargetInfo &TI,
     else if (!LangOpts.GNUMode && LangOpts.Digraphs)
       Builder.defineMacro("__STDC_VERSION__", "199409L");
   } else {
+    // FIXME: Use correct value for C++17.
+    if (LangOpts.CPlusPlus1z)
+      Builder.defineMacro("__cplusplus", "201406L");
     // C++1y [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201402L when compiling a
     //   C++ translation unit.
-     if (LangOpts.CPlusPlus1y)
+    else if (LangOpts.CPlusPlus1y)
       Builder.defineMacro("__cplusplus", "201402L");
     // C++11 [cpp.predefined]p1:
     //   The name __cplusplus is defined to the value 201103L when compiling a
@@ -491,7 +494,7 @@ static void InitializePredefinedMacros(const TargetInfo &TI,
     Builder.defineMacro("__BLOCKS__");
   }
 
-  if (LangOpts.CXXExceptions)
+  if (!LangOpts.MSVCCompat && LangOpts.CXXExceptions)
     Builder.defineMacro("__EXCEPTIONS");
   if (LangOpts.RTTI)
     Builder.defineMacro("__GXX_RTTI");

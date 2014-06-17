@@ -7,8 +7,15 @@
 
 // Alias options:
 
-// RUN: %clang_cl /c -### -- %s 2>&1 | FileCheck -check-prefix=C %s
-// C: -c
+// RUN: %clang_cl /c -### -- %s 2>&1 | FileCheck -check-prefix=c %s
+// c: -c
+
+// RUN: %clang_cl /C -### -- %s 2>&1 | FileCheck -check-prefix=C %s
+// C: error: invalid argument '-C' only allowed with '/E, /P or /EP'
+
+// RUN: %clang_cl /C /P -### -- %s 2>&1 | FileCheck -check-prefix=C_P %s
+// C_P: "-E"
+// C_P: "-C"
 
 // RUN: %clang_cl /Dfoo=bar -### -- %s 2>&1 | FileCheck -check-prefix=D %s
 // RUN: %clang_cl /D foo=bar -### -- %s 2>&1 | FileCheck -check-prefix=D %s
@@ -17,6 +24,11 @@
 // RUN: %clang_cl /E -### -- %s 2>&1 | FileCheck -check-prefix=E %s
 // E: "-E"
 // E: "-o" "-"
+
+// RUN: %clang_cl /EP -### -- %s 2>&1 | FileCheck -check-prefix=EP %s
+// EP: "-E"
+// EP: "-P"
+// EP: "-o" "-"
 
 // RTTI is on by default; just check that we don't error.
 // RUN: %clang_cl /Zs /GR -- %s 2>&1
@@ -189,7 +201,6 @@
 // RUN:     /docname \
 // RUN:     /d2Zi+ \
 // RUN:     /EHsc \
-// RUN:     /EP \
 // RUN:     /F \
 // RUN:     /FA \
 // RUN:     /FAc \

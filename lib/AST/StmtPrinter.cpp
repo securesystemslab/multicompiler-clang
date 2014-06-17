@@ -168,8 +168,10 @@ void StmtPrinter::VisitLabelStmt(LabelStmt *Node) {
 }
 
 void StmtPrinter::VisitAttributedStmt(AttributedStmt *Node) {
-  for (const auto *Attr : Node->getAttrs())
+  for (const auto *Attr : Node->getAttrs()) {
     Attr->printPretty(OS, Policy);
+  }
+
   PrintStmt(Node->getSubStmt(), 0);
 }
 
@@ -608,6 +610,12 @@ void OMPClausePrinter::VisitOMPSafelenClause(OMPSafelenClause *Node) {
   OS << ")";
 }
 
+void OMPClausePrinter::VisitOMPCollapseClause(OMPCollapseClause *Node) {
+  OS << "collapse(";
+  Node->getNumForLoops()->printPretty(OS, nullptr, Policy, 0);
+  OS << ")";
+}
+
 void OMPClausePrinter::VisitOMPDefaultClause(OMPDefaultClause *Node) {
   OS << "default("
      << getOpenMPSimpleClauseTypeName(OMPC_default, Node->getDefaultKind())
@@ -625,6 +633,7 @@ void OMPClausePrinter::VisitOMPClauseList(T *Node, char StartSym) {
   for (typename T::varlist_iterator I = Node->varlist_begin(),
                                     E = Node->varlist_end();
          I != E; ++I) {
+    assert(*I && "Expected non-null Stmt");
     if (DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(*I)) {
       OS << (I == Node->varlist_begin() ? StartSym : ',');
       cast<NamedDecl>(DRE->getDecl())->printQualifiedName(OS);
@@ -651,10 +660,40 @@ void OMPClausePrinter::VisitOMPFirstprivateClause(OMPFirstprivateClause *Node) {
   }
 }
 
+void OMPClausePrinter::VisitOMPLastprivateClause(OMPLastprivateClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "lastprivate";
+    VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
 void OMPClausePrinter::VisitOMPSharedClause(OMPSharedClause *Node) {
   if (!Node->varlist_empty()) {
     OS << "shared";
     VisitOMPClauseList(Node, '(');
+    OS << ")";
+  }
+}
+
+void OMPClausePrinter::VisitOMPReductionClause(OMPReductionClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "reduction(";
+    NestedNameSpecifier *QualifierLoc =
+        Node->getQualifierLoc().getNestedNameSpecifier();
+    OverloadedOperatorKind OOK =
+        Node->getNameInfo().getName().getCXXOverloadedOperator();
+    if (QualifierLoc == nullptr && OOK != OO_None) {
+      // Print reduction identifier in C format
+      OS << getOperatorSpelling(OOK);
+    } else {
+      // Use C++ format
+      if (QualifierLoc != nullptr)
+        QualifierLoc->print(OS, Policy);
+      OS << Node->getNameInfo();
+    }
+    OS << ":";
+    VisitOMPClauseList(Node, ' ');
     OS << ")";
   }
 }
@@ -666,6 +705,18 @@ void OMPClausePrinter::VisitOMPLinearClause(OMPLinearClause *Node) {
     if (Node->getStep() != nullptr) {
       OS << ": ";
       Node->getStep()->printPretty(OS, nullptr, Policy, 0);
+    }
+    OS << ")";
+  }
+}
+
+void OMPClausePrinter::VisitOMPAlignedClause(OMPAlignedClause *Node) {
+  if (!Node->varlist_empty()) {
+    OS << "aligned";
+    VisitOMPClauseList(Node, '(');
+    if (Node->getAlignment() != nullptr) {
+      OS << ": ";
+      Node->getAlignment()->printPretty(OS, nullptr, Policy, 0);
     }
     OS << ")";
   }
@@ -710,6 +761,11 @@ void StmtPrinter::VisitOMPParallelDirective(OMPParallelDirective *Node) {
 
 void StmtPrinter::VisitOMPSimdDirective(OMPSimdDirective *Node) {
   Indent() << "#pragma omp simd ";
+  PrintOMPExecutableDirective(Node);
+}
+
+void StmtPrinter::VisitOMPForDirective(OMPForDirective *Node) {
+  Indent() << "#pragma omp for ";
   PrintOMPExecutableDirective(Node);
 }
 
@@ -1985,11 +2041,6 @@ void Stmt::printPretty(raw_ostream &OS,
                        PrinterHelper *Helper,
                        const PrintingPolicy &Policy,
                        unsigned Indentation) const {
-  if (this == nullptr) {
-    OS << "<NULL>";
-    return;
-  }
-
   StmtPrinter P(OS, Helper, Policy, Indentation);
   P.Visit(const_cast<Stmt*>(this));
 }

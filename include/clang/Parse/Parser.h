@@ -20,6 +20,7 @@
 #include "clang/Lex/CodeCompletionHandler.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/DeclSpec.h"
+#include "clang/Sema/LoopHint.h"
 #include "clang/Sema/Sema.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Compiler.h"
@@ -160,6 +161,8 @@ class Parser : public CodeCompletionHandler {
   std::unique_ptr<PragmaHandler> MSConstSeg;
   std::unique_ptr<PragmaHandler> MSCodeSeg;
   std::unique_ptr<PragmaHandler> MSSection;
+  std::unique_ptr<PragmaHandler> OptimizeHandler;
+  std::unique_ptr<PragmaHandler> LoopHintHandler;
 
   std::unique_ptr<CommentHandler> CommentSemaHandler;
 
@@ -517,6 +520,10 @@ private:
   /// \brief Handle the annotation token produced for
   /// #pragma clang __debug captured
   StmtResult HandlePragmaCaptured();
+
+  /// \brief Handle the annotation token produced for
+  /// #pragma vectorize...
+  LoopHint HandlePragmaLoopHint();
 
   /// GetLookAheadToken - This peeks ahead N tokens and returns that token
   /// without consuming any tokens.  LookAhead(0) returns 'Tok', LookAhead(1)
@@ -1600,6 +1607,9 @@ private:
   StmtResult ParseReturnStatement();
   StmtResult ParseAsmStatement(bool &msAsm);
   StmtResult ParseMicrosoftAsmStatement(SourceLocation AsmLoc);
+  StmtResult ParsePragmaLoopHint(StmtVector &Stmts, bool OnlyStatement,
+                                 SourceLocation *TrailingElseLoc,
+                                 ParsedAttributesWithRange &Attrs);
 
   /// \brief Describes the behavior that should be taken for an __if_exists
   /// block.
@@ -1681,7 +1691,8 @@ private:
     DSC_type_specifier, // C++ type-specifier-seq or C specifier-qualifier-list
     DSC_trailing, // C++11 trailing-type-specifier in a trailing return type
     DSC_alias_declaration, // C++11 type-specifier-seq in an alias-declaration
-    DSC_top_level // top-level/namespace declaration context
+    DSC_top_level, // top-level/namespace declaration context
+    DSC_template_type_arg // template type argument context
   };
 
   /// Is this a context in which we are parsing just a type-specifier (or
@@ -1693,6 +1704,7 @@ private:
     case DSC_top_level:
       return false;
 
+    case DSC_template_type_arg:
     case DSC_type_specifier:
     case DSC_trailing:
     case DSC_alias_declaration:
@@ -1792,7 +1804,7 @@ private:
   /// cast. Return false if it's no a decl-specifier, or we're not sure.
   bool isKnownToBeDeclarationSpecifier() {
     if (getLangOpts().CPlusPlus)
-      return isCXXDeclarationSpecifier() == TPResult::True();
+      return isCXXDeclarationSpecifier() == TPResult::True;
     return isDeclarationSpecifier(true);
   }
 
@@ -1892,25 +1904,8 @@ private:
 
   /// TPResult - Used as the result value for functions whose purpose is to
   /// disambiguate C++ constructs by "tentatively parsing" them.
-  /// This is a class instead of a simple enum because the implicit enum-to-bool
-  /// conversions may cause subtle bugs.
-  class TPResult {
-    enum Result {
-      TPR_true,
-      TPR_false,
-      TPR_ambiguous,
-      TPR_error
-    };
-    Result Res;
-    TPResult(Result result) : Res(result) {}
-  public:
-    static TPResult True() { return TPR_true; }
-    static TPResult False() { return TPR_false; }
-    static TPResult Ambiguous() { return TPR_ambiguous; }
-    static TPResult Error() { return TPR_error; }
-
-    bool operator==(const TPResult &RHS) const { return Res == RHS.Res; }
-    bool operator!=(const TPResult &RHS) const { return Res != RHS.Res; }
+  enum class TPResult {
+    True, False, Ambiguous, Error
   };
 
   /// \brief Based only on the given token kind, determine whether we know that
@@ -1925,15 +1920,15 @@ private:
   /// tell.
   TPResult isExpressionOrTypeSpecifierSimple(tok::TokenKind Kind);
 
-  /// isCXXDeclarationSpecifier - Returns TPResult::True() if it is a
-  /// declaration specifier, TPResult::False() if it is not,
-  /// TPResult::Ambiguous() if it could be either a decl-specifier or a
-  /// function-style cast, and TPResult::Error() if a parsing error was
+  /// isCXXDeclarationSpecifier - Returns TPResult::True if it is a
+  /// declaration specifier, TPResult::False if it is not,
+  /// TPResult::Ambiguous if it could be either a decl-specifier or a
+  /// function-style cast, and TPResult::Error if a parsing error was
   /// encountered. If it could be a braced C++11 function-style cast, returns
   /// BracedCastResult.
   /// Doesn't consume tokens.
   TPResult
-  isCXXDeclarationSpecifier(TPResult BracedCastResult = TPResult::False(),
+  isCXXDeclarationSpecifier(TPResult BracedCastResult = TPResult::False,
                             bool *HasMissingTypename = nullptr);
 
   /// Given that isCXXDeclarationSpecifier returns \c TPResult::True or
@@ -1947,9 +1942,9 @@ private:
   bool isTentativelyDeclared(IdentifierInfo *II);
 
   // "Tentative parsing" functions, used for disambiguation. If a parsing error
-  // is encountered they will return TPResult::Error().
-  // Returning TPResult::True()/False() indicates that the ambiguity was
-  // resolved and tentative parsing may stop. TPResult::Ambiguous() indicates
+  // is encountered they will return TPResult::Error.
+  // Returning TPResult::True/False indicates that the ambiguity was
+  // resolved and tentative parsing may stop. TPResult::Ambiguous indicates
   // that more tentative parsing is necessary for disambiguation.
   // They all consume tokens, so backtracking should be used after calling them.
 
@@ -2387,6 +2382,12 @@ private:
   Decl *ParseTypeParameter(unsigned Depth, unsigned Position);
   Decl *ParseTemplateTemplateParameter(unsigned Depth, unsigned Position);
   Decl *ParseNonTypeTemplateParameter(unsigned Depth, unsigned Position);
+  void DiagnoseMisplacedEllipsis(SourceLocation EllipsisLoc,
+                                 SourceLocation CorrectLoc,
+                                 bool AlreadyHasEllipsis,
+                                 bool IdentifierHasName);
+  void DiagnoseMisplacedEllipsisInDeclarator(SourceLocation EllipsisLoc,
+                                             Declarator &D);
   // C++ 14.3: Template arguments [temp.arg]
   typedef SmallVector<ParsedTemplateArgument, 16> TemplateArgList;
 

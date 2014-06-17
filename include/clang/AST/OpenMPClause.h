@@ -306,6 +306,62 @@ public:
   StmtRange children() { return StmtRange(&Safelen, &Safelen + 1); }
 };
 
+/// \brief This represents 'collapse' clause in the '#pragma omp ...'
+/// directive.
+///
+/// \code
+/// #pragma omp simd collapse(3)
+/// \endcode
+/// In this example directive '#pragma omp simd' has clause 'collapse'
+/// with single expression '3'.
+/// The parameter must be a constant positive integer expression, it specifies
+/// the number of nested loops that should be collapsed into a single iteration
+/// space.
+///
+class OMPCollapseClause : public OMPClause {
+  friend class OMPClauseReader;
+  /// \brief Location of '('.
+  SourceLocation LParenLoc;
+  /// \brief Number of for-loops.
+  Stmt *NumForLoops;
+
+  /// \brief Set the number of associated for-loops.
+  void setNumForLoops(Expr *Num) { NumForLoops = Num; }
+
+public:
+  /// \brief Build 'collapse' clause.
+  ///
+  /// \param Num Expression associated with this clause.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  ///
+  OMPCollapseClause(Expr *Num, SourceLocation StartLoc,
+                    SourceLocation LParenLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_collapse, StartLoc, EndLoc), LParenLoc(LParenLoc),
+        NumForLoops(Num) {}
+
+  /// \brief Build an empty clause.
+  ///
+  explicit OMPCollapseClause()
+      : OMPClause(OMPC_collapse, SourceLocation(), SourceLocation()),
+        LParenLoc(SourceLocation()), NumForLoops(nullptr) {}
+
+  /// \brief Sets the location of '('.
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+  /// \brief Returns the location of '('.
+  SourceLocation getLParenLoc() const { return LParenLoc; }
+
+  /// \brief Return the number of associated for-loops.
+  Expr *getNumForLoops() const { return cast_or_null<Expr>(NumForLoops); }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_collapse;
+  }
+
+  StmtRange children() { return StmtRange(&NumForLoops, &NumForLoops + 1); }
+};
+
 /// \brief This represents 'default' clause in the '#pragma omp ...' directive.
 ///
 /// \code
@@ -375,7 +431,8 @@ public:
   StmtRange children() { return StmtRange(); }
 };
 
-/// \brief This represents 'proc_bind' clause in the '#pragma omp ...' directive.
+/// \brief This represents 'proc_bind' clause in the '#pragma omp ...'
+/// directive.
 ///
 /// \code
 /// #pragma omp parallel proc_bind(master)
@@ -415,8 +472,8 @@ public:
   /// \param EndLoc Ending location of the clause.
   ///
   OMPProcBindClause(OpenMPProcBindClauseKind A, SourceLocation ALoc,
-                   SourceLocation StartLoc, SourceLocation LParenLoc,
-                   SourceLocation EndLoc)
+                    SourceLocation StartLoc, SourceLocation LParenLoc,
+                    SourceLocation EndLoc)
       : OMPClause(OMPC_proc_bind, StartLoc, EndLoc), LParenLoc(LParenLoc),
         Kind(A), KindKwLoc(ALoc) {}
 
@@ -564,6 +621,66 @@ public:
   }
 };
 
+/// \brief This represents clause 'lastprivate' in the '#pragma omp ...'
+/// directives.
+///
+/// \code
+/// #pragma omp simd lastprivate(a,b)
+/// \endcode
+/// In this example directive '#pragma omp simd' has clause 'lastprivate'
+/// with the variables 'a' and 'b'.
+///
+class OMPLastprivateClause : public OMPVarListClause<OMPLastprivateClause> {
+  /// \brief Build clause with number of variables \a N.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param N Number of the variables in the clause.
+  ///
+  OMPLastprivateClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                       SourceLocation EndLoc, unsigned N)
+      : OMPVarListClause<OMPLastprivateClause>(OMPC_lastprivate, StartLoc,
+                                               LParenLoc, EndLoc, N) {}
+
+  /// \brief Build an empty clause.
+  ///
+  /// \param N Number of variables.
+  ///
+  explicit OMPLastprivateClause(unsigned N)
+      : OMPVarListClause<OMPLastprivateClause>(
+            OMPC_lastprivate, SourceLocation(), SourceLocation(),
+            SourceLocation(), N) {}
+
+public:
+  /// \brief Creates clause with a list of variables \a VL.
+  ///
+  /// \param C AST context.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL List of references to the variables.
+  ///
+  static OMPLastprivateClause *
+  Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation LParenLoc,
+         SourceLocation EndLoc, ArrayRef<Expr *> VL);
+  /// \brief Creates an empty clause with the place for \a N variables.
+  ///
+  /// \param C AST context.
+  /// \param N The number of variables.
+  ///
+  static OMPLastprivateClause *CreateEmpty(const ASTContext &C, unsigned N);
+
+  StmtRange children() {
+    return StmtRange(reinterpret_cast<Stmt **>(varlist_begin()),
+                     reinterpret_cast<Stmt **>(varlist_end()));
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_lastprivate;
+  }
+};
+
 /// \brief This represents clause 'shared' in the '#pragma omp ...' directives.
 ///
 /// \code
@@ -620,6 +737,99 @@ public:
 
   static bool classof(const OMPClause *T) {
     return T->getClauseKind() == OMPC_shared;
+  }
+};
+
+/// \brief This represents clause 'reduction' in the '#pragma omp ...'
+/// directives.
+///
+/// \code
+/// #pragma omp parallel reduction(+:a,b)
+/// \endcode
+/// In this example directive '#pragma omp parallel' has clause 'reduction'
+/// with operator '+' and the variables 'a' and 'b'.
+///
+class OMPReductionClause : public OMPVarListClause<OMPReductionClause> {
+  friend class OMPClauseReader;
+  /// \brief Location of ':'.
+  SourceLocation ColonLoc;
+  /// \brief Nested name specifier for C++.
+  NestedNameSpecifierLoc QualifierLoc;
+  /// \brief Name of custom operator.
+  DeclarationNameInfo NameInfo;
+
+  /// \brief Build clause with number of variables \a N.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param ColonLoc Location of ':'.
+  /// \param N Number of the variables in the clause.
+  /// \param QualifierLoc The nested-name qualifier with location information
+  /// \param NameInfo The full name info for reduction identifier.
+  ///
+  OMPReductionClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                     SourceLocation ColonLoc, SourceLocation EndLoc, unsigned N,
+                     NestedNameSpecifierLoc QualifierLoc,
+                     const DeclarationNameInfo &NameInfo)
+      : OMPVarListClause<OMPReductionClause>(OMPC_reduction, StartLoc,
+                                             LParenLoc, EndLoc, N),
+        ColonLoc(ColonLoc), QualifierLoc(QualifierLoc), NameInfo(NameInfo) {}
+
+  /// \brief Build an empty clause.
+  ///
+  /// \param N Number of variables.
+  ///
+  explicit OMPReductionClause(unsigned N)
+      : OMPVarListClause<OMPReductionClause>(OMPC_reduction, SourceLocation(),
+                                             SourceLocation(), SourceLocation(),
+                                             N),
+        ColonLoc(), QualifierLoc(), NameInfo() {}
+
+  /// \brief Sets location of ':' symbol in clause.
+  void setColonLoc(SourceLocation CL) { ColonLoc = CL; }
+  /// \brief Sets the name info for specified reduction identifier.
+  void setNameInfo(DeclarationNameInfo DNI) { NameInfo = DNI; }
+  /// \brief Sets the nested name specifier.
+  void setQualifierLoc(NestedNameSpecifierLoc NSL) { QualifierLoc = NSL; }
+
+public:
+  /// \brief Creates clause with a list of variables \a VL.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param ColonLoc Location of ':'.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL The variables in the clause.
+  /// \param QualifierLoc The nested-name qualifier with location information
+  /// \param NameInfo The full name info for reduction identifier.
+  ///
+  static OMPReductionClause *
+  Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation LParenLoc,
+         SourceLocation ColonLoc, SourceLocation EndLoc, ArrayRef<Expr *> VL,
+         NestedNameSpecifierLoc QualifierLoc,
+         const DeclarationNameInfo &NameInfo);
+  /// \brief Creates an empty clause with the place for \a N variables.
+  ///
+  /// \param C AST context.
+  /// \param N The number of variables.
+  ///
+  static OMPReductionClause *CreateEmpty(const ASTContext &C, unsigned N);
+
+  /// \brief Gets location of ':' symbol in clause.
+  SourceLocation getColonLoc() const { return ColonLoc; }
+  /// \brief Gets the name info for specified reduction identifier.
+  const DeclarationNameInfo &getNameInfo() const { return NameInfo; }
+  /// \brief Gets the nested name specifier.
+  NestedNameSpecifierLoc getQualifierLoc() const { return QualifierLoc; }
+
+  StmtRange children() {
+    return StmtRange(reinterpret_cast<Stmt **>(varlist_begin()),
+                     reinterpret_cast<Stmt **>(varlist_end()));
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_reduction;
   }
 };
 
@@ -705,6 +915,91 @@ public:
 
   static bool classof(const OMPClause *T) {
     return T->getClauseKind() == OMPC_linear;
+  }
+};
+
+/// \brief This represents clause 'aligned' in the '#pragma omp ...'
+/// directives.
+///
+/// \code
+/// #pragma omp simd aligned(a,b : 8)
+/// \endcode
+/// In this example directive '#pragma omp simd' has clause 'aligned'
+/// with variables 'a', 'b' and alignment '8'.
+///
+class OMPAlignedClause : public OMPVarListClause<OMPAlignedClause> {
+  friend class OMPClauseReader;
+  /// \brief Location of ':'.
+  SourceLocation ColonLoc;
+
+  /// \brief Sets the alignment for clause.
+  void setAlignment(Expr *A) { *varlist_end() = A; }
+
+  /// \brief Build 'aligned' clause with given number of variables \a NumVars.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param ColonLoc Location of ':'.
+  /// \param EndLoc Ending location of the clause.
+  /// \param NumVars Number of variables.
+  ///
+  OMPAlignedClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                   SourceLocation ColonLoc, SourceLocation EndLoc,
+                   unsigned NumVars)
+      : OMPVarListClause<OMPAlignedClause>(OMPC_aligned, StartLoc, LParenLoc,
+                                           EndLoc, NumVars),
+        ColonLoc(ColonLoc) {}
+
+  /// \brief Build an empty clause.
+  ///
+  /// \param NumVars Number of variables.
+  ///
+  explicit OMPAlignedClause(unsigned NumVars)
+      : OMPVarListClause<OMPAlignedClause>(OMPC_aligned, SourceLocation(),
+                                           SourceLocation(), SourceLocation(),
+                                           NumVars),
+        ColonLoc(SourceLocation()) {}
+
+public:
+  /// \brief Creates clause with a list of variables \a VL and alignment \a A.
+  ///
+  /// \param C AST Context.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param ColonLoc Location of ':'.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL List of references to the variables.
+  /// \param A Alignment.
+  static OMPAlignedClause *Create(const ASTContext &C, SourceLocation StartLoc,
+                                  SourceLocation LParenLoc,
+                                  SourceLocation ColonLoc,
+                                  SourceLocation EndLoc, ArrayRef<Expr *> VL,
+                                  Expr *A);
+
+  /// \brief Creates an empty clause with the place for \a NumVars variables.
+  ///
+  /// \param C AST context.
+  /// \param NumVars Number of variables.
+  ///
+  static OMPAlignedClause *CreateEmpty(const ASTContext &C, unsigned NumVars);
+
+  /// \brief Sets the location of ':'.
+  void setColonLoc(SourceLocation Loc) { ColonLoc = Loc; }
+  /// \brief Returns the location of ':'.
+  SourceLocation getColonLoc() const { return ColonLoc; }
+
+  /// \brief Returns alignment.
+  Expr *getAlignment() { return *varlist_end(); }
+  /// \brief Returns alignment.
+  const Expr *getAlignment() const { return *varlist_end(); }
+
+  StmtRange children() {
+    return StmtRange(reinterpret_cast<Stmt **>(varlist_begin()),
+                     reinterpret_cast<Stmt **>(varlist_end() + 1));
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_aligned;
   }
 };
 

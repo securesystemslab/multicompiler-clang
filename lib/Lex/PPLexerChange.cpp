@@ -58,7 +58,7 @@ PreprocessorLexer *Preprocessor::getCurrentFileLexer() const {
     if (IsFileLexer(ISI))
       return ISI.ThePPLexer;
   }
-  return 0;
+  return nullptr;
 }
 
 
@@ -117,7 +117,7 @@ void Preprocessor::EnterSourceFileWithLexer(Lexer *TheLexer,
   CurLexer.reset(TheLexer);
   CurPPLexer = TheLexer;
   CurDirLookup = CurDir;
-  CurSubmodule = 0;
+  CurSubmodule = nullptr;
   if (CurLexerKind != CLK_LexAfterModuleImport)
     CurLexerKind = CLK_Lexer;
   
@@ -142,7 +142,7 @@ void Preprocessor::EnterSourceFileWithPTH(PTHLexer *PL,
   CurDirLookup = CurDir;
   CurPTHLexer.reset(PL);
   CurPPLexer = CurPTHLexer.get();
-  CurSubmodule = 0;
+  CurSubmodule = nullptr;
   if (CurLexerKind != CLK_LexAfterModuleImport)
     CurLexerKind = CLK_PTHLexer;
   
@@ -169,7 +169,7 @@ void Preprocessor::EnterMacro(Token &Tok, SourceLocation ILEnd,
   }
 
   PushIncludeMacroStack();
-  CurDirLookup = 0;
+  CurDirLookup = nullptr;
   CurTokenLexer.reset(TokLexer);
   if (CurLexerKind != CLK_LexAfterModuleImport)
     CurLexerKind = CLK_TokenLexer;
@@ -202,7 +202,7 @@ void Preprocessor::EnterTokenStream(const Token *Toks, unsigned NumToks,
 
   // Save our current state.
   PushIncludeMacroStack();
-  CurDirLookup = 0;
+  CurDirLookup = nullptr;
   CurTokenLexer.reset(TokLexer);
   if (CurLexerKind != CLK_LexAfterModuleImport)
     CurLexerKind = CLK_TokenLexer;
@@ -354,7 +354,7 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
         CurPTHLexer.reset();
       }
 
-      CurPPLexer = 0;
+      CurPPLexer = nullptr;
       return true;
     }
 
@@ -429,7 +429,7 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
   }
   
   if (!isIncrementalProcessingEnabled())
-    CurPPLexer = 0;
+    CurPPLexer = nullptr;
 
   if (TUKind == TU_Complete) {
     // This is the end of the top-level file. 'WarnUnusedMacroLocs' has
@@ -449,14 +449,13 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
       SourceLocation StartLoc
         = SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
 
-      if (getDiagnostics().getDiagnosticLevel(
-            diag::warn_uncovered_module_header, 
-            StartLoc) != DiagnosticsEngine::Ignored) {
+      if (!getDiagnostics().isIgnored(diag::warn_uncovered_module_header,
+                                      StartLoc)) {
         ModuleMap &ModMap = getHeaderSearchInfo().getModuleMap();
         typedef llvm::sys::fs::recursive_directory_iterator
           recursive_directory_iterator;
         const DirectoryEntry *Dir = Mod->getUmbrellaDir();
-        llvm::error_code EC;
+        std::error_code EC;
         for (recursive_directory_iterator Entry(Dir->getName(), EC), End;
              Entry != End && !EC; Entry.increment(EC)) {
           using llvm::StringSwitch;
@@ -486,9 +485,8 @@ bool Preprocessor::HandleEndOfFile(Token &Result, bool isEndOfMacro) {
     // mentioned at all in the module map. Such headers 
     SourceLocation StartLoc
       = SourceMgr.getLocForStartOfFile(SourceMgr.getMainFileID());
-    if (getDiagnostics().getDiagnosticLevel(diag::warn_forgotten_module_header,
-                                            StartLoc)
-          != DiagnosticsEngine::Ignored) {
+    if (!getDiagnostics().isIgnored(diag::warn_forgotten_module_header,
+                                    StartLoc)) {
       ModuleMap &ModMap = getHeaderSearchInfo().getModuleMap();
       for (unsigned I = 0, N = SourceMgr.local_sloc_entry_size(); I != N; ++I) {
         // We only care about file entries.
@@ -561,11 +559,11 @@ void Preprocessor::HandleMicrosoftCommentPaste(Token &Tok) {
   // We handle this by scanning for the closest real lexer, switching it to
   // raw mode and preprocessor mode.  This will cause it to return \n as an
   // explicit EOD token.
-  PreprocessorLexer *FoundLexer = 0;
+  PreprocessorLexer *FoundLexer = nullptr;
   bool LexerWasInPPMode = false;
   for (unsigned i = 0, e = IncludeMacroStack.size(); i != e; ++i) {
     IncludeStackInfo &ISI = *(IncludeMacroStack.end()-i-1);
-    if (ISI.ThePPLexer == 0) continue;  // Scan for a real lexer.
+    if (ISI.ThePPLexer == nullptr) continue;  // Scan for a real lexer.
 
     // Once we find a real lexer, mark it as raw mode (disabling macro
     // expansions) and preprocessor mode (return EOD).  We know that the lexer

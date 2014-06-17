@@ -734,9 +734,9 @@ class ObjCInterfaceDecl : public ObjCContainerDecl
                        InheritedDesignatedInitializers(IDI_Unknown) { }
   };
 
-  ObjCInterfaceDecl(DeclContext *DC, SourceLocation atLoc, IdentifierInfo *Id,
-                    SourceLocation CLoc, ObjCInterfaceDecl *PrevDecl,
-                    bool isInternal);
+  ObjCInterfaceDecl(const ASTContext &C, DeclContext *DC, SourceLocation AtLoc,
+                    IdentifierInfo *Id, SourceLocation CLoc,
+                    ObjCInterfaceDecl *PrevDecl, bool IsInternal);
 
   void LoadExternalDefinition() const;
 
@@ -774,7 +774,7 @@ public:
                                    SourceLocation ClassLoc = SourceLocation(),
                                    bool isInternal = false);
 
-  static ObjCInterfaceDecl *CreateDeserialized(ASTContext &C, unsigned ID);
+  static ObjCInterfaceDecl *CreateDeserialized(const ASTContext &C, unsigned ID);
 
   SourceRange getSourceRange() const override LLVM_READONLY {
     if (isThisDeclarationADefinition())
@@ -1524,7 +1524,7 @@ class ObjCProtocolDecl : public ObjCContainerDecl,
     return *Data.getPointer();
   }
   
-  ObjCProtocolDecl(DeclContext *DC, IdentifierInfo *Id,
+  ObjCProtocolDecl(ASTContext &C, DeclContext *DC, IdentifierInfo *Id,
                    SourceLocation nameLoc, SourceLocation atStartLoc,
                    ObjCProtocolDecl *PrevDecl);
 
@@ -1549,7 +1549,7 @@ public:
                                   ObjCProtocolDecl *PrevDecl);
 
   static ObjCProtocolDecl *CreateDeserialized(ASTContext &C, unsigned ID);
-                           
+
   const ObjCProtocolList &getReferencedProtocols() const {
     assert(hasDefinition() && "No definition available!");
     return data().ReferencedProtocols;
@@ -1927,8 +1927,8 @@ public:
 
   /// getIdentifier - Get the identifier that names the category
   /// interface associated with this implementation.
-  /// FIXME: This is a bad API, we are overriding the NamedDecl::getIdentifier()
-  /// to mean something different. For example:
+  /// FIXME: This is a bad API, we are hiding NamedDecl::getIdentifier()
+  /// with a different meaning. For example:
   /// ((NamedDecl *)SomeCategoryImplDecl)->getIdentifier()
   /// returns the class interface name, whereas
   /// ((ObjCCategoryImplDecl *)SomeCategoryImplDecl)->getIdentifier()
@@ -1945,11 +1945,9 @@ public:
   /// getName - Get the name of identifier for the class interface associated
   /// with this implementation as a StringRef.
   //
-  // FIXME: This is a bad API, we are overriding the NamedDecl::getName, to mean
-  // something different.
-  StringRef getName() const {
-    return Id ? Id->getNameStart() : "";
-  }
+  // FIXME: This is a bad API, we are hiding NamedDecl::getName with a different
+  // meaning.
+  StringRef getName() const { return Id ? Id->getName() : StringRef(); }
 
   /// @brief Get the name of the class associated with this interface.
   //
@@ -2089,8 +2087,8 @@ public:
   /// getName - Get the name of identifier for the class interface associated
   /// with this implementation as a StringRef.
   //
-  // FIXME: This is a bad API, we are overriding the NamedDecl::getName, to mean
-  // something different.
+  // FIXME: This is a bad API, we are hiding NamedDecl::getName with a different
+  // meaning.
   StringRef getName() const {
     assert(getIdentifier() && "Name is not a simple identifier");
     return getIdentifier()->getName();

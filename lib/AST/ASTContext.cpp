@@ -755,6 +755,8 @@ ASTContext::ASTContext(LangOptions& LOpts, SourceManager &SM,
 }
 
 ASTContext::~ASTContext() {
+  ReleaseParentMapEntries();
+
   // Release the DenseMaps associated with DeclContext objects.
   // FIXME: Is this the ideal solution?
   ReleaseDeclContextMaps();
@@ -787,6 +789,18 @@ ASTContext::~ASTContext() {
     A->second->~AttrVec();
 
   llvm::DeleteContainerSeconds(MangleNumberingContexts);
+}
+
+void ASTContext::ReleaseParentMapEntries() {
+  if (!AllParents) return;
+  for (const auto &Entry : *AllParents) {
+    if (Entry.second.is<ast_type_traits::DynTypedNode *>()) {
+      delete Entry.second.get<ast_type_traits::DynTypedNode *>();
+    } else {
+      assert(Entry.second.is<ParentVector *>());
+      delete Entry.second.get<ParentVector *>();
+    }
+  }
 }
 
 void ASTContext::AddDeallocation(void (*Callback)(void*), void *Data) {
@@ -1295,13 +1309,14 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool ForAlignof) const {
 
   } else if (const ValueDecl *VD = dyn_cast<ValueDecl>(D)) {
     QualType T = VD->getType();
-    if (const ReferenceType* RT = T->getAs<ReferenceType>()) {
+    if (const ReferenceType *RT = T->getAs<ReferenceType>()) {
       if (ForAlignof)
         T = RT->getPointeeType();
       else
         T = getPointerType(RT->getPointeeType());
     }
-    if (!T->isIncompleteType() && !T->isFunctionType()) {
+    QualType BaseT = getBaseElementType(T);
+    if (!BaseT->isIncompleteType() && !T->isFunctionType()) {
       // Adjust alignments of declarations with array type by the
       // large-array alignment on the target.
       if (const ArrayType *arrayType = getAsArrayType(T)) {
@@ -1313,11 +1328,6 @@ CharUnits ASTContext::getDeclAlign(const Decl *D, bool ForAlignof) const {
                    MinWidth <= getTypeSize(cast<ConstantArrayType>(arrayType)))
             Align = std::max(Align, Target->getLargeArrayAlign());
         }
-
-        // Keep track of extra alignment requirements on the array itself, then
-        // work with the element type.
-        Align = std::max(Align, getPreferredTypeAlign(T.getTypePtr()));
-        T = getBaseElementType(arrayType);
       }
       Align = std::max(Align, getPreferredTypeAlign(T.getTypePtr()));
       if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
@@ -1769,6 +1779,7 @@ unsigned ASTContext::getPreferredTypeAlign(const Type *T) const {
   const TypedefType *TT = T->getAs<TypedefType>();
 
   // Double and long long should be naturally aligned if possible.
+  T = T->getBaseElementTypeUnsafe();
   if (const ComplexType *CT = T->getAs<ComplexType>())
     T = CT->getElementType().getTypePtr();
   if (T->isSpecificBuiltinType(BuiltinType::Double) ||
@@ -3304,8 +3315,6 @@ QualType ASTContext::getDependentNameType(ElaboratedTypeKeyword Keyword,
                                           NestedNameSpecifier *NNS,
                                           const IdentifierInfo *Name,
                                           QualType Canon) const {
-  assert(NNS->isDependent() && "nested-name-specifier must be dependent");
-
   if (Canon.isNull()) {
     NestedNameSpecifier *CanonNNS = getCanonicalNestedNameSpecifier(NNS);
     ElaboratedTypeKeyword CanonKeyword = Keyword;
@@ -3673,10 +3682,10 @@ QualType ASTContext::getTypeOfExprType(Expr *tofExpr) const {
 }
 
 /// getTypeOfType -  Unlike many "get<Type>" functions, we don't unique
-/// TypeOfType AST's. The only motivation to unique these nodes would be
+/// TypeOfType nodes. The only motivation to unique these nodes would be
 /// memory savings. Since typeof(t) is fairly uncommon, space shouldn't be
-/// an issue. This doesn't effect the type checker, since it operates
-/// on canonical type's (which are always unique).
+/// an issue. This doesn't affect the type checker, since it operates
+/// on canonical types (which are always unique).
 QualType ASTContext::getTypeOfType(QualType tofType) const {
   QualType Canonical = getCanonicalType(tofType);
   TypeOfType *tot = new (*this, TypeAlignment) TypeOfType(tofType, Canonical);
@@ -3685,18 +3694,17 @@ QualType ASTContext::getTypeOfType(QualType tofType) const {
 }
 
 
-/// getDecltypeType -  Unlike many "get<Type>" functions, we don't unique
-/// DecltypeType AST's. The only motivation to unique these nodes would be
-/// memory savings. Since decltype(t) is fairly uncommon, space shouldn't be
-/// an issue. This doesn't effect the type checker, since it operates
-/// on canonical types (which are always unique).
+/// \brief Unlike many "get<Type>" functions, we don't unique DecltypeType
+/// nodes. This would never be helpful, since each such type has its own
+/// expression, and would not give a significant memory saving, since there
+/// is an Expr tree under each such type.
 QualType ASTContext::getDecltypeType(Expr *e, QualType UnderlyingType) const {
   DecltypeType *dt;
-  
-  // C++0x [temp.type]p2:
+
+  // C++11 [temp.type]p2:
   //   If an expression e involves a template parameter, decltype(e) denotes a
-  //   unique dependent type. Two such decltype-specifiers refer to the same 
-  //   type only if their expressions are equivalent (14.5.6.1). 
+  //   unique dependent type. Two such decltype-specifiers refer to the same
+  //   type only if their expressions are equivalent (14.5.6.1).
   if (e->isInstantiationDependent()) {
     llvm::FoldingSetNodeID ID;
     DependentDecltypeType::Profile(ID, *this, e);
@@ -3704,20 +3712,16 @@ QualType ASTContext::getDecltypeType(Expr *e, QualType UnderlyingType) const {
     void *InsertPos = nullptr;
     DependentDecltypeType *Canon
       = DependentDecltypeTypes.FindNodeOrInsertPos(ID, InsertPos);
-    if (Canon) {
-      // We already have a "canonical" version of an equivalent, dependent
-      // decltype type. Use that as our canonical type.
-      dt = new (*this, TypeAlignment) DecltypeType(e, UnderlyingType,
-                                       QualType((DecltypeType*)Canon, 0));
-    } else {
+    if (!Canon) {
       // Build a new, canonical typeof(expr) type.
       Canon = new (*this, TypeAlignment) DependentDecltypeType(*this, e);
       DependentDecltypeTypes.InsertNode(Canon, InsertPos);
-      dt = Canon;
     }
+    dt = new (*this, TypeAlignment)
+        DecltypeType(e, UnderlyingType, QualType((DecltypeType *)Canon, 0));
   } else {
-    dt = new (*this, TypeAlignment) DecltypeType(e, UnderlyingType, 
-                                      getCanonicalType(UnderlyingType));
+    dt = new (*this, TypeAlignment)
+        DecltypeType(e, UnderlyingType, getCanonicalType(UnderlyingType));
   }
   Types.push_back(dt);
   return QualType(dt, 0);
@@ -7742,7 +7746,8 @@ QualType ASTContext::GetBuiltinType(unsigned Id,
   return getFunctionType(ResType, ArgTypes, EPI);
 }
 
-GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) const {
+static GVALinkage basicGVALinkageForFunction(const ASTContext &Context,
+                                             const FunctionDecl *FD) {
   if (!FD->isExternallyVisible())
     return GVA_Internal;
 
@@ -7773,8 +7778,11 @@ GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) const {
   if (!FD->isInlined())
     return External;
 
-  if ((!getLangOpts().CPlusPlus && !getLangOpts().MSVCCompat) ||
+  if ((!Context.getLangOpts().CPlusPlus && !Context.getLangOpts().MSVCCompat &&
+       !FD->hasAttr<DLLExportAttr>()) ||
       FD->hasAttr<GNUInlineAttr>()) {
+    // FIXME: This doesn't match gcc's behavior for dllexport inline functions.
+
     // GNU or C99 inline semantics. Determine whether this symbol should be
     // externally visible.
     if (FD->isInlineDefinitionExternallyVisible())
@@ -7793,7 +7801,26 @@ GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) const {
   return GVA_DiscardableODR;
 }
 
-GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
+static GVALinkage adjustGVALinkageForDLLAttribute(GVALinkage L, const Decl *D) {
+  // See http://msdn.microsoft.com/en-us/library/xa0d9ste.aspx
+  // dllexport/dllimport on inline functions.
+  if (D->hasAttr<DLLImportAttr>()) {
+    if (L == GVA_DiscardableODR || L == GVA_StrongODR)
+      return GVA_AvailableExternally;
+  } else if (D->hasAttr<DLLExportAttr>()) {
+    if (L == GVA_DiscardableODR)
+      return GVA_StrongODR;
+  }
+  return L;
+}
+
+GVALinkage ASTContext::GetGVALinkageForFunction(const FunctionDecl *FD) const {
+  return adjustGVALinkageForDLLAttribute(basicGVALinkageForFunction(*this, FD),
+                                         FD);
+}
+
+static GVALinkage basicGVALinkageForVariable(const ASTContext &Context,
+                                             const VarDecl *VD) {
   if (!VD->isExternallyVisible())
     return GVA_Internal;
 
@@ -7807,7 +7834,7 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
     // enclosing function.
     if (LexicalContext)
       StaticLocalLinkage =
-          GetGVALinkageForFunction(cast<FunctionDecl>(LexicalContext));
+          Context.GetGVALinkageForFunction(cast<FunctionDecl>(LexicalContext));
 
     // GVA_StrongODR function linkage is stronger than what we need,
     // downgrade to GVA_DiscardableODR.
@@ -7815,14 +7842,6 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
     return StaticLocalLinkage == GVA_StrongODR ? GVA_DiscardableODR
                                                : StaticLocalLinkage;
   }
-
-  // On Darwin, the backing variable for a C++11 thread_local variable always
-  // has internal linkage; all accesses should just be calls to the
-  // Itanium-specified entry point, which has the normal linkage of the
-  // variable.
-  if (VD->getTLSKind() == VarDecl::TLS_Dynamic &&
-      getTargetInfo().getTriple().isMacOSX())
-    return GVA_Internal;
 
   switch (VD->getTemplateSpecializationKind()) {
   case TSK_Undeclared:
@@ -7842,9 +7861,17 @@ GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
   llvm_unreachable("Invalid Linkage!");
 }
 
+GVALinkage ASTContext::GetGVALinkageForVariable(const VarDecl *VD) {
+  return adjustGVALinkageForDLLAttribute(basicGVALinkageForVariable(*this, VD),
+                                         VD);
+}
+
 bool ASTContext::DeclMustBeEmitted(const Decl *D) {
   if (const VarDecl *VD = dyn_cast<VarDecl>(D)) {
     if (!VD->isFileVarDecl())
+      return false;
+    // Global named register variables (GNU extension) are never emitted.
+    if (VD->getStorageClass() == SC_Register)
       return false;
   } else if (const FunctionDecl *FD = dyn_cast<FunctionDecl>(D)) {
     // We never need to emit an uninstantiated function template.
@@ -8131,16 +8158,43 @@ namespace {
     bool TraverseNode(T *Node, bool(VisitorBase:: *traverse) (T *)) {
       if (!Node)
         return true;
-      if (ParentStack.size() > 0)
-        // FIXME: Currently we add the same parent multiple times, for example
-        // when we visit all subexpressions of template instantiations; this is
-        // suboptimal, bug benign: the only way to visit those is with
-        // hasAncestor / hasParent, and those do not create new matches.
+      if (ParentStack.size() > 0) {
+        // FIXME: Currently we add the same parent multiple times, but only
+        // when no memoization data is available for the type.
+        // For example when we visit all subexpressions of template
+        // instantiations; this is suboptimal, but benign: the only way to
+        // visit those is with hasAncestor / hasParent, and those do not create
+        // new matches.
         // The plan is to enable DynTypedNode to be storable in a map or hash
         // map. The main problem there is to implement hash functions /
         // comparison operators for all types that DynTypedNode supports that
         // do not have pointer identity.
-        (*Parents)[Node].push_back(ParentStack.back());
+        auto &NodeOrVector = (*Parents)[Node];
+        if (NodeOrVector.isNull()) {
+          NodeOrVector = new ast_type_traits::DynTypedNode(ParentStack.back());
+        } else {
+          if (NodeOrVector.template is<ast_type_traits::DynTypedNode *>()) {
+            auto *Node =
+                NodeOrVector.template get<ast_type_traits::DynTypedNode *>();
+            auto *Vector = new ASTContext::ParentVector(1, *Node);
+            NodeOrVector = Vector;
+            delete Node;
+          }
+          assert(NodeOrVector.template is<ASTContext::ParentVector *>());
+
+          auto *Vector =
+              NodeOrVector.template get<ASTContext::ParentVector *>();
+          // Skip duplicates for types that have memoization data.
+          // We must check that the type has memoization data before calling
+          // std::find() because DynTypedNode::operator== can't compare all
+          // types.
+          bool Found = ParentStack.back().getMemoizationData() &&
+                       std::find(Vector->begin(), Vector->end(),
+                                 ParentStack.back()) != Vector->end();
+          if (!Found)
+            Vector->push_back(ParentStack.back());
+        }
+      }
       ParentStack.push_back(ast_type_traits::DynTypedNode::create(*Node));
       bool Result = (this ->* traverse) (Node);
       ParentStack.pop_back();
@@ -8178,7 +8232,11 @@ ASTContext::getParents(const ast_type_traits::DynTypedNode &Node) {
   if (I == AllParents->end()) {
     return ParentVector();
   }
-  return I->second;
+  if (I->second.is<ast_type_traits::DynTypedNode *>()) {
+    return ParentVector(1, *I->second.get<ast_type_traits::DynTypedNode *>());
+  }
+  const auto &Parents = *I->second.get<ParentVector *>();
+  return ParentVector(Parents.begin(), Parents.end());
 }
 
 bool
@@ -8211,3 +8269,12 @@ ASTContext::ObjCMethodsAreEqual(const ObjCMethodDecl *MethodDecl,
   return (MethodDecl->isVariadic() == MethodImpl->isVariadic());
   
 }
+
+// Explicitly instantiate this in case a Redeclarable<T> is used from a TU that
+// doesn't include ASTContext.h
+template
+clang::LazyGenerationalUpdatePtr<
+    const Decl *, Decl *, &ExternalASTSource::CompleteRedeclChain>::ValueType
+clang::LazyGenerationalUpdatePtr<
+    const Decl *, Decl *, &ExternalASTSource::CompleteRedeclChain>::makeValue(
+        const clang::ASTContext &Ctx, Decl *Value);

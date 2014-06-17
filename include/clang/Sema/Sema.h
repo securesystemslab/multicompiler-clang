@@ -48,7 +48,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
-#include "llvm/MC/MCParser/MCAsmParser.h"
 #include <deque>
 #include <memory>
 #include <string>
@@ -59,6 +58,7 @@ namespace llvm {
   template <typename ValueT> struct DenseMapInfo;
   template <typename ValueT, typename ValueInfoT> class DenseSet;
   class SmallBitVector;
+  class InlineAsmIdentifierInfo;
 }
 
 namespace clang {
@@ -332,6 +332,11 @@ public:
 
   /// VisContext - Manages the stack for \#pragma GCC visibility.
   void *VisContext; // Really a "PragmaVisStack*"
+
+  /// \brief This represents the last location of a "#pragma clang optimize off"
+  /// directive if such a directive has not been closed by an "on" yet. If
+  /// optimizations are currently "on", this is set to an invalid location.
+  SourceLocation OptimizeOffPragmaLocation;
 
   /// \brief Flag indicating if Sema is building a recovery call expression.
   ///
@@ -923,9 +928,6 @@ public:
     bool OldFPContractState : 1;
   };
 
-  typedef llvm::MCAsmParserSemaCallback::InlineAsmIdentifierInfo
-    InlineAsmIdentifierInfo;
-
   void addImplicitTypedef(StringRef Name, QualType T);
 
 public:
@@ -1030,10 +1032,6 @@ public:
 
   /// \brief Retrieve the module loader associated with the preprocessor.
   ModuleLoader &getModuleLoader() const;
-
-  ExprResult Owned(Expr* E) { return E; }
-  ExprResult Owned(ExprResult R) { return R; }
-  StmtResult Owned(Stmt* S) { return S; }
 
   void ActOnEndOfTranslationUnit();
 
@@ -1417,6 +1415,13 @@ public:
                                ParsedType &SuggestedType,
                                bool AllowClassTemplates = false);
 
+  /// \brief For compatibility with MSVC, we delay parsing of some default
+  /// template type arguments until instantiation time.  Emits a warning and
+  /// returns a synthesized DependentNameType that isn't really dependent on any
+  /// other template arguments.
+  ParsedType ActOnDelayedDefaultTemplateArg(const IdentifierInfo &II,
+                                            SourceLocation NameLoc);
+
   /// \brief Describes the result of the name lookup and resolution performed
   /// by \c ClassifyName().
   enum NameClassificationKind {
@@ -1665,6 +1670,7 @@ public:
   Decl *ActOnFinishFunctionBody(Decl *Decl, Stmt *Body);
   Decl *ActOnFinishFunctionBody(Decl *Decl, Stmt *Body, bool IsInstantiation);
   Decl *ActOnSkippedFunctionBody(Decl *Decl);
+  void ActOnFinishInlineMethodDef(CXXMethodDecl *D);
 
   /// ActOnFinishDelayedAttribute - Invoked when we have finished parsing an
   /// attribute for which parsing is delayed.
@@ -2944,13 +2950,13 @@ public:
     return MakeFullExpr(Arg, Arg ? Arg->getExprLoc() : SourceLocation());
   }
   FullExprArg MakeFullExpr(Expr *Arg, SourceLocation CC) {
-    return FullExprArg(ActOnFinishFullExpr(Arg, CC).release());
+    return FullExprArg(ActOnFinishFullExpr(Arg, CC).get());
   }
   FullExprArg MakeFullDiscardedValueExpr(Expr *Arg) {
     ExprResult FE =
       ActOnFinishFullExpr(Arg, Arg ? Arg->getExprLoc() : SourceLocation(),
                           /*DiscardedValue*/ true);
-    return FullExprArg(FE.release());
+    return FullExprArg(FE.get());
   }
 
   StmtResult ActOnExprStmt(ExprResult Arg);
@@ -3094,7 +3100,7 @@ public:
   ExprResult LookupInlineAsmIdentifier(CXXScopeSpec &SS,
                                        SourceLocation TemplateKWLoc,
                                        UnqualifiedId &Id,
-                                       InlineAsmIdentifierInfo &Info,
+                                       llvm::InlineAsmIdentifierInfo &Info,
                                        bool IsUnevaluatedContext);
   bool LookupInlineAsmField(StringRef Base, StringRef Member,
                             unsigned &Offset, SourceLocation AsmLoc);
@@ -3205,7 +3211,8 @@ public:
                                NamedDecl *D, StringRef Message,
                                SourceLocation Loc,
                                const ObjCInterfaceDecl *UnknownObjCClass,
-                               const ObjCPropertyDecl  *ObjCProperty);
+                               const ObjCPropertyDecl  *ObjCProperty,
+                               bool ObjCPropertyAccess);
 
   void HandleDelayedAvailabilityCheck(sema::DelayedDiagnostic &DD, Decl *Ctx);
 
@@ -3217,7 +3224,8 @@ public:
 
   bool CanUseDecl(NamedDecl *D);
   bool DiagnoseUseOfDecl(NamedDecl *D, SourceLocation Loc,
-                         const ObjCInterfaceDecl *UnknownObjCClass=nullptr);
+                         const ObjCInterfaceDecl *UnknownObjCClass=nullptr,
+                         bool ObjCPropertyAccess=false);
   void NoteDeletedFunction(FunctionDecl *FD);
   std::string getDeletedOrUnavailableSuffix(const FunctionDecl *FD);
   bool DiagnosePropertyAccessorMismatch(ObjCPropertyDecl *PD,
@@ -3397,9 +3405,10 @@ public:
                                   const LookupResult &R,
                                   bool HasTrailingLParen);
 
-  ExprResult BuildQualifiedDeclarationNameExpr(CXXScopeSpec &SS,
-                                         const DeclarationNameInfo &NameInfo,
-                                               bool IsAddressOfOperand);
+  ExprResult BuildQualifiedDeclarationNameExpr(
+      CXXScopeSpec &SS, const DeclarationNameInfo &NameInfo,
+      bool IsAddressOfOperand, TypeSourceInfo **RecoveryTSI = nullptr);
+
   ExprResult BuildDependentDeclRefExpr(const CXXScopeSpec &SS,
                                        SourceLocation TemplateKWLoc,
                                 const DeclarationNameInfo &NameInfo,
@@ -3491,14 +3500,6 @@ public:
   ExprResult CreateBuiltinArraySubscriptExpr(Expr *Base, SourceLocation LLoc,
                                              Expr *Idx, SourceLocation RLoc);
 
-  ExprResult BuildMemberReferenceExpr(Expr *Base, QualType BaseType,
-                                      SourceLocation OpLoc, bool IsArrow,
-                                      CXXScopeSpec &SS,
-                                      SourceLocation TemplateKWLoc,
-                                      NamedDecl *FirstQualifierInScope,
-                                const DeclarationNameInfo &NameInfo,
-                                const TemplateArgumentListInfo *TemplateArgs);
-
   // This struct is for use by ActOnMemberAccess to allow
   // BuildMemberReferenceExpr to be able to reinvoke ActOnMemberAccess after
   // changing the access operator from a '.' to a '->' (to see if that is the
@@ -3511,6 +3512,13 @@ public:
     bool HasTrailingLParen;
   };
 
+  ExprResult BuildMemberReferenceExpr(
+      Expr *Base, QualType BaseType, SourceLocation OpLoc, bool IsArrow,
+      CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
+      NamedDecl *FirstQualifierInScope, const DeclarationNameInfo &NameInfo,
+      const TemplateArgumentListInfo *TemplateArgs,
+      ActOnMemberAccessExtraArgs *ExtraArgs = nullptr);
+
   ExprResult
   BuildMemberReferenceExpr(Expr *Base, QualType BaseType, SourceLocation OpLoc,
                            bool IsArrow, const CXXScopeSpec &SS,
@@ -3521,11 +3529,6 @@ public:
                            ActOnMemberAccessExtraArgs *ExtraArgs = nullptr);
 
   ExprResult PerformMemberExprBaseConversion(Expr *Base, bool IsArrow);
-  ExprResult LookupMemberExpr(LookupResult &R, ExprResult &Base,
-                              bool &IsArrow, SourceLocation OpLoc,
-                              CXXScopeSpec &SS,
-                              Decl *ObjCImpDecl,
-                              bool HasTemplateArgs);
 
   bool CheckQualifiedMemberReference(Expr *BaseExpr, QualType BaseType,
                                      const CXXScopeSpec &SS,
@@ -3926,7 +3929,7 @@ public:
         ///   potential exceptions of the special member function contains "any"
         EPI.ExceptionSpecType = EST_ComputedNoexcept;
         EPI.NoexceptExpr = Self->ActOnCXXBoolLiteral(SourceLocation(),
-                                                     tok::kw_false).take();
+                                                     tok::kw_false).get();
       }
     }
     FunctionProtoType::ExtProtoInfo getEPI() const {
@@ -5178,7 +5181,7 @@ public:
   void DiagnoseTemplateParameterShadow(SourceLocation Loc, Decl *PrevDecl);
   TemplateDecl *AdjustDeclIfTemplate(Decl *&Decl);
 
-  Decl *ActOnTypeParameter(Scope *S, bool Typename, bool Ellipsis,
+  Decl *ActOnTypeParameter(Scope *S, bool Typename,
                            SourceLocation EllipsisLoc,
                            SourceLocation KeyLoc,
                            IdentifierInfo *ParamName,
@@ -5397,7 +5400,7 @@ public:
   };
 
   bool CheckTemplateArgument(NamedDecl *Param,
-                             const TemplateArgumentLoc &Arg,
+                             TemplateArgumentLoc &Arg,
                              NamedDecl *Template,
                              SourceLocation TemplateLoc,
                              SourceLocation RAngleLoc,
@@ -5433,7 +5436,7 @@ public:
                            SmallVectorImpl<TemplateArgument> &Converted);
 
   bool CheckTemplateTypeArgument(TemplateTypeParmDecl *Param,
-                                 const TemplateArgumentLoc &Arg,
+                                 TemplateArgumentLoc &Arg,
                            SmallVectorImpl<TemplateArgument> &Converted);
 
   bool CheckTemplateArgument(TemplateTypeParmDecl *Param,
@@ -5443,7 +5446,7 @@ public:
                                    TemplateArgument &Converted,
                                CheckTemplateArgumentKind CTAK = CTAK_Specified);
   bool CheckTemplateArgument(TemplateTemplateParmDecl *Param,
-                             const TemplateArgumentLoc &Arg,
+                             TemplateArgumentLoc &Arg,
                              unsigned ArgumentPackIndex);
 
   ExprResult
@@ -7231,6 +7234,25 @@ public:
   /// the appropriate attribute.
   void AddCFAuditedAttribute(Decl *D);
 
+  /// \brief Called on well formed \#pragma clang optimize.
+  void ActOnPragmaOptimize(bool On, SourceLocation PragmaLoc);
+
+  /// \brief Get the location for the currently active "\#pragma clang optimize
+  /// off". If this location is invalid, then the state of the pragma is "on".
+  SourceLocation getOptimizeOffPragmaLocation() const {
+    return OptimizeOffPragmaLocation;
+  }
+
+  /// \brief Only called on function definitions; if there is a pragma in scope
+  /// with the effect of a range-based optnone, consider marking the function
+  /// with attribute optnone.
+  void AddRangeBasedOptnone(FunctionDecl *FD);
+
+  /// \brief Adds the 'optnone' attribute to the function declaration if there
+  /// are no conflicts; Loc represents the location causing the 'optnone'
+  /// attribute to be added (usually because of a pragma).
+  void AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD, SourceLocation Loc);
+
   /// AddAlignedAttr - Adds an aligned attribute to a particular declaration.
   void AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
                       unsigned SpellingListIndex, bool IsPackExpansion);
@@ -7243,10 +7265,11 @@ private:
   /// \brief Initialization of data-sharing attributes stack.
   void InitDataSharingAttributesStack();
   void DestroyDataSharingAttributesStack();
-  ExprResult PerformImplicitIntegerConversion(SourceLocation OpLoc, Expr *Op);
   ExprResult VerifyPositiveIntegerConstantInClause(Expr *Op,
                                                    OpenMPClauseKind CKind);
 public:
+  ExprResult PerformOpenMPImplicitIntegerConversion(SourceLocation OpLoc,
+                                                    Expr *Op);
   /// \brief Called on start of new data sharing attribute block.
   void StartOpenMPDSABlock(OpenMPDirectiveKind K,
                            const DeclarationNameInfo &DirName,
@@ -7289,6 +7312,11 @@ public:
                                       Stmt *AStmt,
                                       SourceLocation StartLoc,
                                       SourceLocation EndLoc);
+  /// \brief Called on well-formed '\#pragma omp for' after parsing
+  /// of the associated statement.
+  StmtResult ActOnOpenMPForDirective(ArrayRef<OMPClause *> Clauses, Stmt *AStmt,
+                                     SourceLocation StartLoc,
+                                     SourceLocation EndLoc);
 
   OMPClause *ActOnOpenMPSingleExprClause(OpenMPClauseKind Kind,
                                          Expr *Expr,
@@ -7309,6 +7337,11 @@ public:
                                       SourceLocation StartLoc,
                                       SourceLocation LParenLoc,
                                       SourceLocation EndLoc);
+  /// \brief Called on well-formed 'collapse' clause.
+  OMPClause *ActOnOpenMPCollapseClause(Expr *NumForLoops,
+                                       SourceLocation StartLoc,
+                                       SourceLocation LParenLoc,
+                                       SourceLocation EndLoc);
 
   OMPClause *ActOnOpenMPSimpleClause(OpenMPClauseKind Kind,
                                      unsigned Argument,
@@ -7329,13 +7362,13 @@ public:
                                        SourceLocation LParenLoc,
                                        SourceLocation EndLoc);
 
-  OMPClause *ActOnOpenMPVarListClause(OpenMPClauseKind Kind,
-                                      ArrayRef<Expr *> Vars,
-                                      Expr *TailExpr,
-                                      SourceLocation StartLoc,
-                                      SourceLocation LParenLoc,
-                                      SourceLocation ColonLoc,
-                                      SourceLocation EndLoc);
+  OMPClause *
+  ActOnOpenMPVarListClause(OpenMPClauseKind Kind, ArrayRef<Expr *> Vars,
+                           Expr *TailExpr, SourceLocation StartLoc,
+                           SourceLocation LParenLoc, SourceLocation ColonLoc,
+                           SourceLocation EndLoc,
+                           CXXScopeSpec &ReductionIdScopeSpec,
+                           const DeclarationNameInfo &ReductionId);
   /// \brief Called on well-formed 'private' clause.
   OMPClause *ActOnOpenMPPrivateClause(ArrayRef<Expr *> VarList,
                                       SourceLocation StartLoc,
@@ -7346,11 +7379,23 @@ public:
                                            SourceLocation StartLoc,
                                            SourceLocation LParenLoc,
                                            SourceLocation EndLoc);
+  /// \brief Called on well-formed 'lastprivate' clause.
+  OMPClause *ActOnOpenMPLastprivateClause(ArrayRef<Expr *> VarList,
+                                          SourceLocation StartLoc,
+                                          SourceLocation LParenLoc,
+                                          SourceLocation EndLoc);
   /// \brief Called on well-formed 'shared' clause.
   OMPClause *ActOnOpenMPSharedClause(ArrayRef<Expr *> VarList,
                                      SourceLocation StartLoc,
                                      SourceLocation LParenLoc,
                                      SourceLocation EndLoc);
+  /// \brief Called on well-formed 'reduction' clause.
+  OMPClause *
+  ActOnOpenMPReductionClause(ArrayRef<Expr *> VarList, SourceLocation StartLoc,
+                             SourceLocation LParenLoc, SourceLocation ColonLoc,
+                             SourceLocation EndLoc,
+                             CXXScopeSpec &ReductionIdScopeSpec,
+                             const DeclarationNameInfo &ReductionId);
   /// \brief Called on well-formed 'linear' clause.
   OMPClause *ActOnOpenMPLinearClause(ArrayRef<Expr *> VarList,
                                      Expr *Step,
@@ -7358,6 +7403,13 @@ public:
                                      SourceLocation LParenLoc,
                                      SourceLocation ColonLoc,
                                      SourceLocation EndLoc);
+  /// \brief Called on well-formed 'aligned' clause.
+  OMPClause *ActOnOpenMPAlignedClause(ArrayRef<Expr *> VarList,
+                                      Expr *Alignment,
+                                      SourceLocation StartLoc,
+                                      SourceLocation LParenLoc,
+                                      SourceLocation ColonLoc,
+                                      SourceLocation EndLoc);
   /// \brief Called on well-formed 'copyin' clause.
   OMPClause *ActOnOpenMPCopyinClause(ArrayRef<Expr *> VarList,
                                      SourceLocation StartLoc,
@@ -7667,11 +7719,11 @@ public:
   QualType FindCompositePointerType(SourceLocation Loc,
                                     ExprResult &E1, ExprResult &E2,
                                     bool *NonStandardCompositeType = nullptr) {
-    Expr *E1Tmp = E1.take(), *E2Tmp = E2.take();
+    Expr *E1Tmp = E1.get(), *E2Tmp = E2.get();
     QualType Composite = FindCompositePointerType(Loc, E1Tmp, E2Tmp,
                                                   NonStandardCompositeType);
-    E1 = Owned(E1Tmp);
-    E2 = Owned(E2Tmp);
+    E1 = E1Tmp;
+    E2 = E2Tmp;
     return Composite;
   }
 
@@ -8100,7 +8152,6 @@ private:
   bool CheckNeonBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckARMBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
 
-  bool CheckARM64BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckAArch64BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckMipsBuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);
   bool CheckX86BuiltinFunctionCall(unsigned BuiltinID, CallExpr *TheCall);

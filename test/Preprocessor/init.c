@@ -9,6 +9,16 @@
 // BLOCKS:#define __block __attribute__((__blocks__(byref)))
 //
 //
+// RUN: %clang_cc1 -x c++ -std=c++1z -E -dM < /dev/null | FileCheck -check-prefix CXX1Z %s
+//
+// CXX1Z:#define __GNUG__
+// CXX1Z:#define __GXX_EXPERIMENTAL_CXX0X__ 1
+// CXX1Z:#define __GXX_RTTI 1
+// CXX1Z:#define __GXX_WEAK__ 1
+// CXX1Z:#define __cplusplus 201406L
+// CXX1Z:#define __private_extern__ extern
+//
+//
 // RUN: %clang_cc1 -x c++ -std=c++1y -E -dM < /dev/null | FileCheck -check-prefix CXX1Y %s
 //
 // CXX1Y:#define __GNUG__
@@ -83,6 +93,14 @@
 // 
 // RUN: %clang_cc1 -ffreestanding -E -dM < /dev/null | FileCheck -check-prefix FREESTANDING %s
 // FREESTANDING:#define __STDC_HOSTED__ 0
+//
+//
+// RUN: %clang_cc1 -x c++ -std=gnu++1z -E -dM < /dev/null | FileCheck -check-prefix GXX1Z %s
+//
+// GXX1Z:#define __GNUG__
+// GXX1Z:#define __GXX_WEAK__ 1
+// GXX1Z:#define __cplusplus 201406L
+// GXX1Z:#define __private_extern__ extern
 //
 //
 // RUN: %clang_cc1 -x c++ -std=gnu++1y -E -dM < /dev/null | FileCheck -check-prefix GXX1Y %s
@@ -1880,7 +1898,7 @@
 // MIPS64EL:#define _mips 1
 // MIPS64EL:#define mips 1
 //
-// Check MIPS arch macros
+// Check MIPS arch and isa macros
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips-none-none \
 // RUN:            < /dev/null \
@@ -1888,6 +1906,8 @@
 //
 // MIPS-ARCH-DEF32:#define _MIPS_ARCH "mips32r2"
 // MIPS-ARCH-DEF32:#define _MIPS_ARCH_MIPS32R2 1
+// MIPS-ARCH-DEF32:#define _MIPS_ISA _MIPS_ISA_MIPS32
+// MIPS-ARCH-DEF32:#define __mips_isa_rev 2
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips-none-nones \
 // RUN:            -target-cpu mips32 < /dev/null \
@@ -1895,6 +1915,8 @@
 //
 // MIPS-ARCH-32:#define _MIPS_ARCH "mips32"
 // MIPS-ARCH-32:#define _MIPS_ARCH_MIPS32 1
+// MIPS-ARCH-32:#define _MIPS_ISA _MIPS_ISA_MIPS32
+// MIPS-ARCH-32:#define __mips_isa_rev 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips-none-none \
 // RUN:            -target-cpu mips32r2 < /dev/null \
@@ -1902,6 +1924,8 @@
 //
 // MIPS-ARCH-32R2:#define _MIPS_ARCH "mips32r2"
 // MIPS-ARCH-32R2:#define _MIPS_ARCH_MIPS32R2 1
+// MIPS-ARCH-32R2:#define _MIPS_ISA _MIPS_ISA_MIPS32
+// MIPS-ARCH-32R2:#define __mips_isa_rev 2
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips64-none-none \
 // RUN:            < /dev/null \
@@ -1909,6 +1933,8 @@
 //
 // MIPS-ARCH-DEF64:#define _MIPS_ARCH "mips64r2"
 // MIPS-ARCH-DEF64:#define _MIPS_ARCH_MIPS64R2 1
+// MIPS-ARCH-DEF64:#define _MIPS_ISA _MIPS_ISA_MIPS64
+// MIPS-ARCH-DEF64:#define __mips_isa_rev 2
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips64-none-none \
 // RUN:            -target-cpu mips64 < /dev/null \
@@ -1916,6 +1942,8 @@
 //
 // MIPS-ARCH-64:#define _MIPS_ARCH "mips64"
 // MIPS-ARCH-64:#define _MIPS_ARCH_MIPS64 1
+// MIPS-ARCH-64:#define _MIPS_ISA _MIPS_ISA_MIPS64
+// MIPS-ARCH-64:#define __mips_isa_rev 1
 //
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=mips64-none-none \
 // RUN:            -target-cpu mips64r2 < /dev/null \
@@ -1923,6 +1951,8 @@
 //
 // MIPS-ARCH-64R2:#define _MIPS_ARCH "mips64r2"
 // MIPS-ARCH-64R2:#define _MIPS_ARCH_MIPS64R2 1
+// MIPS-ARCH-64R2:#define _MIPS_ISA _MIPS_ISA_MIPS64
+// MIPS-ARCH-64R2:#define __mips_isa_rev 2
 //
 // Check MIPS float ABI macros
 //

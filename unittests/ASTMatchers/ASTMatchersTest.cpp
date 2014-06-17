@@ -44,14 +44,15 @@ TEST(IsDerivedFromDeathTest, DiesOnEmptyBaseName) {
 
 TEST(Finder, DynamicOnlyAcceptsSomeMatchers) {
   MatchFinder Finder;
-  EXPECT_TRUE(Finder.addDynamicMatcher(decl(), NULL));
-  EXPECT_TRUE(Finder.addDynamicMatcher(callExpr(), NULL));
-  EXPECT_TRUE(Finder.addDynamicMatcher(constantArrayType(hasSize(42)), NULL));
+  EXPECT_TRUE(Finder.addDynamicMatcher(decl(), nullptr));
+  EXPECT_TRUE(Finder.addDynamicMatcher(callExpr(), nullptr));
+  EXPECT_TRUE(Finder.addDynamicMatcher(constantArrayType(hasSize(42)),
+                                       nullptr));
 
   // Do not accept non-toplevel matchers.
-  EXPECT_FALSE(Finder.addDynamicMatcher(isArrow(), NULL));
-  EXPECT_FALSE(Finder.addDynamicMatcher(hasSize(2), NULL));
-  EXPECT_FALSE(Finder.addDynamicMatcher(hasName("x"), NULL));
+  EXPECT_FALSE(Finder.addDynamicMatcher(isArrow(), nullptr));
+  EXPECT_FALSE(Finder.addDynamicMatcher(hasSize(2), nullptr));
+  EXPECT_FALSE(Finder.addDynamicMatcher(hasName("x"), nullptr));
 }
 
 TEST(Decl, MatchesDeclarations) {
@@ -697,7 +698,8 @@ public:
         EXPECT_EQ(Nodes->getNodeAs<T>(Id), I->second.get<T>());
       return true;
     }
-    EXPECT_TRUE(M.count(Id) == 0 || M.find(Id)->second.template get<T>() == 0);
+    EXPECT_TRUE(M.count(Id) == 0 ||
+                M.find(Id)->second.template get<T>() == nullptr);
     return false;
   }
 
@@ -1163,6 +1165,18 @@ TEST(Matcher, VariableUsage) {
       "void z(const Y &y) {"
       "  bool b = y.x();"
       "}", Reference));
+}
+
+TEST(Matcher, VarDecl_Storage) {
+  auto M = varDecl(hasName("X"), hasLocalStorage());
+  EXPECT_TRUE(matches("void f() { int X; }", M));
+  EXPECT_TRUE(notMatches("int X;", M));
+  EXPECT_TRUE(notMatches("void f() { static int X; }", M));
+
+  M = varDecl(hasName("X"), hasGlobalStorage());
+  EXPECT_TRUE(notMatches("void f() { int X; }", M));
+  EXPECT_TRUE(matches("int X;", M));
+  EXPECT_TRUE(matches("void f() { static int X; }", M));
 }
 
 TEST(Matcher, FindsVarDeclInFunctionParameter) {
@@ -1773,6 +1787,9 @@ TEST(ConstructorDeclaration, IsImplicit) {
                       constructorDecl(isImplicit())));
   EXPECT_TRUE(matches("class Foo { Foo(){} };",
                       constructorDecl(unless(isImplicit()))));
+  // The compiler added an implicit assignment operator.
+  EXPECT_TRUE(matches("struct A { int x; } a = {0}, b = a; void f() { a = b; }",
+                      methodDecl(isImplicit(), hasName("operator="))));
 }
 
 TEST(DestructorDeclaration, MatchesVirtualDestructor) {
@@ -1961,6 +1978,17 @@ TEST(Matcher, Conditions) {
   EXPECT_TRUE(notMatches("void x() { bool a = true; if (a) {} }", Condition));
   EXPECT_TRUE(notMatches("void x() { if (true || false) {} }", Condition));
   EXPECT_TRUE(notMatches("void x() { if (1) {} }", Condition));
+}
+
+TEST(IfStmt, ChildTraversalMatchers) {
+  EXPECT_TRUE(matches("void f() { if (false) true; else false; }",
+                      ifStmt(hasThen(boolLiteral(equals(true))))));
+  EXPECT_TRUE(notMatches("void f() { if (false) false; else true; }",
+                         ifStmt(hasThen(boolLiteral(equals(true))))));
+  EXPECT_TRUE(matches("void f() { if (false) false; else true; }",
+                      ifStmt(hasElse(boolLiteral(equals(true))))));
+  EXPECT_TRUE(notMatches("void f() { if (false) true; else false; }",
+                         ifStmt(hasElse(boolLiteral(equals(true))))));
 }
 
 TEST(MatchBinaryOperator, HasOperatorName) {
@@ -2388,6 +2416,9 @@ TEST(For, ForLoopInternals) {
 TEST(For, ForRangeLoopInternals) {
   EXPECT_TRUE(matches("void f(){ int a[] {1, 2}; for (int i : a); }",
                       forRangeStmt(hasLoopVariable(anything()))));
+  EXPECT_TRUE(matches(
+      "void f(){ int a[] {1, 2}; for (int i : a); }",
+      forRangeStmt(hasRangeInit(declRefExpr(to(varDecl(hasName("a"))))))));
 }
 
 TEST(For, NegativeForLoopInternals) {
@@ -2426,6 +2457,8 @@ TEST(HasBody, FindsBodyOfForWhileDoLoops) {
               whileStmt(hasBody(compoundStmt()))));
   EXPECT_TRUE(matches("void f() { do {} while(true); }",
               doStmt(hasBody(compoundStmt()))));
+  EXPECT_TRUE(matches("void f() { int p[2]; for (auto x : p) {} }",
+              forRangeStmt(hasBody(compoundStmt()))));
 }
 
 TEST(HasAnySubstatement, MatchesForTopLevelCompoundStatement) {
@@ -3590,6 +3623,27 @@ TEST(HasParent, MatchesAllParents) {
                  compoundStmt(hasParent(recordDecl()))));
 }
 
+TEST(HasParent, NoDuplicateParents) {
+  class HasDuplicateParents : public BoundNodesCallback {
+  public:
+    bool run(const BoundNodes *Nodes) override { return false; }
+    bool run(const BoundNodes *Nodes, ASTContext *Context) override {
+      const Stmt *Node = Nodes->getNodeAs<Stmt>("node");
+      std::set<const void *> Parents;
+      for (const auto &Parent : Context->getParents(*Node)) {
+        if (!Parents.insert(Parent.getMemoizationData()).second) {
+          return true;
+        }
+      }
+      return false;
+    }
+  };
+  EXPECT_FALSE(matchAndVerifyResultTrue(
+      "template <typename T> int Foo() { return 1 + 2; }\n"
+      "int x = Foo<int>() + Foo<unsigned>();",
+      stmt().bind("node"), new HasDuplicateParents()));
+}
+
 TEST(TypeMatching, MatchesTypes) {
   EXPECT_TRUE(matches("struct S {};", qualType().bind("loc")));
 }
@@ -4085,7 +4139,7 @@ public:
   virtual bool run(const BoundNodes *Nodes, ASTContext *Context) {
     const T *Node = Nodes->getNodeAs<T>(Id);
     return selectFirst<const T>(InnerId,
-                                match(InnerMatcher, *Node, *Context)) != NULL;
+                                match(InnerMatcher, *Node, *Context)) !=nullptr;
   }
 private:
   std::string Id;
@@ -4139,24 +4193,32 @@ public:
   }
 
   bool verify(const BoundNodes &Nodes, ASTContext &Context, const Stmt *Node) {
+    // Use the original typed pointer to verify we can pass pointers to subtypes
+    // to equalsNode.
+    const T *TypedNode = cast<T>(Node);
     return selectFirst<const T>(
-        "", match(stmt(hasParent(stmt(has(stmt(equalsNode(Node)))).bind(""))),
-                  *Node, Context)) != NULL;
+               "", match(stmt(hasParent(
+                             stmt(has(stmt(equalsNode(TypedNode)))).bind(""))),
+                         *Node, Context)) != nullptr;
   }
   bool verify(const BoundNodes &Nodes, ASTContext &Context, const Decl *Node) {
+    // Use the original typed pointer to verify we can pass pointers to subtypes
+    // to equalsNode.
+    const T *TypedNode = cast<T>(Node);
     return selectFirst<const T>(
-        "", match(decl(hasParent(decl(has(decl(equalsNode(Node)))).bind(""))),
-                  *Node, Context)) != NULL;
+               "", match(decl(hasParent(
+                             decl(has(decl(equalsNode(TypedNode)))).bind(""))),
+                         *Node, Context)) != nullptr;
   }
 };
 
 TEST(IsEqualTo, MatchesNodesByIdentity) {
   EXPECT_TRUE(matchAndVerifyResultTrue(
       "class X { class Y {}; };", recordDecl(hasName("::X::Y")).bind(""),
-      new VerifyAncestorHasChildIsEqual<Decl>()));
-  EXPECT_TRUE(
-      matchAndVerifyResultTrue("void f() { if(true) {} }", ifStmt().bind(""),
-                               new VerifyAncestorHasChildIsEqual<Stmt>()));
+      new VerifyAncestorHasChildIsEqual<CXXRecordDecl>()));
+  EXPECT_TRUE(matchAndVerifyResultTrue(
+      "void f() { if (true) if(true) {} }", ifStmt().bind(""),
+      new VerifyAncestorHasChildIsEqual<IfStmt>()));
 }
 
 class VerifyStartOfTranslationUnit : public MatchFinder::MatchCallback {

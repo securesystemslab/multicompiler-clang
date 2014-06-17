@@ -174,7 +174,8 @@ public:
 
   void emitVirtualInheritanceTables(const CXXRecordDecl *RD) override;
 
-  void setThunkLinkage(llvm::Function *Thunk, bool ForVTable) override {
+  void setThunkLinkage(llvm::Function *Thunk, bool ForVTable, GlobalDecl GD,
+                       bool ReturnAdjustment) override {
     // Allow inlining of thunks by emitting them with available_externally
     // linkage together with vtables when needed.
     if (ForVTable)
@@ -899,7 +900,7 @@ void ItaniumCXXABI::addImplicitStructorParams(CodeGenFunction &CGF,
     // FIXME: avoid the fake decl
     QualType T = Context.getPointerType(Context.VoidPtrTy);
     ImplicitParamDecl *VTTDecl
-      = ImplicitParamDecl::Create(Context, 0, MD->getLocation(),
+      = ImplicitParamDecl::Create(Context, nullptr, MD->getLocation(),
                                   &Context.Idents.get("vtt"), T);
     Params.insert(Params.begin() + 1, VTTDecl);
     getStructorImplicitParamDecl(CGF) = VTTDecl;
@@ -951,7 +952,7 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
   llvm::Value *VTT = CGF.GetVTTParameter(GD, ForVirtualBase, Delegating);
   QualType VTTTy = getContext().getPointerType(getContext().VoidPtrTy);
 
-  llvm::Value *Callee = 0;
+  llvm::Value *Callee = nullptr;
   if (getContext().getLangOpts().AppleKext)
     Callee = CGF.BuildAppleKextVirtualDestructorCall(DD, Type, DD->getParent());
 
@@ -960,7 +961,7 @@ void ItaniumCXXABI::EmitDestructorCall(CodeGenFunction &CGF,
 
   // FIXME: Provide a source location here.
   CGF.EmitCXXMemberCall(DD, SourceLocation(), Callee, ReturnValueSlot(), This,
-                        VTT, VTTTy, 0, 0);
+                        VTT, VTTTy, nullptr, nullptr);
 }
 
 void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1069,6 +1070,12 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   VTable = CGM.CreateOrReplaceCXXRuntimeVariable(
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage);
   VTable->setUnnamedAddr(true);
+
+  if (RD->hasAttr<DLLImportAttr>())
+    VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+  else if (RD->hasAttr<DLLExportAttr>())
+    VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+
   return VTable;
 }
 
@@ -1100,7 +1107,8 @@ void ItaniumCXXABI::EmitVirtualDestructorCall(CodeGenFunction &CGF,
       getVirtualFunctionPointer(CGF, GlobalDecl(Dtor, DtorType), This, Ty);
 
   CGF.EmitCXXMemberCall(Dtor, CallLoc, Callee, ReturnValueSlot(), This,
-                        /*ImplicitParam=*/0, QualType(), 0, 0);
+                        /*ImplicitParam=*/nullptr, QualType(), nullptr,
+                        nullptr);
 }
 
 void ItaniumCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
@@ -1567,11 +1575,21 @@ void ItaniumCXXABI::registerGlobalDtor(CodeGenFunction &CGF,
 /// Get the appropriate linkage for the wrapper function. This is essentially
 /// the weak form of the variable's linkage; every translation unit which wneeds
 /// the wrapper emits a copy, and we want the linker to merge them.
-static llvm::GlobalValue::LinkageTypes getThreadLocalWrapperLinkage(
-    llvm::GlobalValue::LinkageTypes VarLinkage) {
+static llvm::GlobalValue::LinkageTypes
+getThreadLocalWrapperLinkage(const VarDecl *VD, CodeGen::CodeGenModule &CGM) {
+  llvm::GlobalValue::LinkageTypes VarLinkage =
+      CGM.getLLVMLinkageVarDefinition(VD, /*isConstant=*/false);
+
   // For internal linkage variables, we don't need an external or weak wrapper.
   if (llvm::GlobalValue::isLocalLinkage(VarLinkage))
     return VarLinkage;
+
+  // All accesses to the thread_local variable go through the thread wrapper.
+  // However, this means that we cannot allow the thread wrapper to get inlined
+  // into any functions.
+  if (VD->getTLSKind() == VarDecl::TLS_Dynamic &&
+      CGM.getTarget().getTriple().isMacOSX())
+    return llvm::GlobalValue::WeakAnyLinkage;
   return llvm::GlobalValue::WeakODRLinkage;
 }
 
@@ -1594,10 +1612,9 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
     RetTy = RetTy->getPointerElementType();
 
   llvm::FunctionType *FnTy = llvm::FunctionType::get(RetTy, false);
-  llvm::Function *Wrapper = llvm::Function::Create(
-      FnTy, getThreadLocalWrapperLinkage(
-                CGM.getLLVMLinkageVarDefinition(VD, /*isConstant=*/false)),
-      WrapperName.str(), &CGM.getModule());
+  llvm::Function *Wrapper =
+      llvm::Function::Create(FnTy, getThreadLocalWrapperLinkage(VD, CGM),
+                             WrapperName.str(), &CGM.getModule());
   // Always resolve references to the wrapper at link time.
   if (!Wrapper->hasLocalLinkage())
     Wrapper->setVisibility(llvm::GlobalValue::HiddenVisibility);
@@ -1622,14 +1639,13 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     // If we have a definition for the variable, emit the initialization
     // function as an alias to the global Init function (if any). Otherwise,
     // produce a declaration of the initialization function.
-    llvm::GlobalValue *Init = 0;
+    llvm::GlobalValue *Init = nullptr;
     bool InitIsInitFunc = false;
     if (VD->hasDefinition()) {
       InitIsInitFunc = true;
       if (InitFunc)
-        Init =
-            new llvm::GlobalAlias(InitFunc->getType(), Var->getLinkage(),
-                                  InitFnName.str(), InitFunc, &CGM.getModule());
+        Init = llvm::GlobalAlias::create(Var->getLinkage(), InitFnName.str(),
+                                         InitFunc);
     } else {
       // Emit a weak global function referring to the initialization function.
       // This function will not exist if the TU defining the thread_local

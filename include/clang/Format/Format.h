@@ -17,7 +17,7 @@
 
 #include "clang/Frontend/FrontendAction.h"
 #include "clang/Tooling/Refactoring.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 
 namespace clang {
 
@@ -26,6 +26,15 @@ class SourceManager;
 class DiagnosticConsumer;
 
 namespace format {
+
+enum class ParseError { Success = 0, Error, Unsuitable };
+class ParseErrorCategory final : public std::error_category {
+public:
+  const char *name() const LLVM_NOEXCEPT override;
+  std::string message(int EV) const override;
+};
+const std::error_category &getParseCategory();
+std::error_code make_error_code(ParseError e);
 
 /// \brief The \c FormatStyle is used to configure the formatting to follow
 /// specific guidelines.
@@ -76,12 +85,22 @@ struct FormatStyle {
   /// \brief The penalty for breaking a function call after "call(".
   unsigned PenaltyBreakBeforeFirstCallParameter;
 
-  /// \brief Set whether & and * bind to the type as opposed to the variable.
-  bool PointerBindsToType;
+  /// \brief The & and * alignment style.
+  enum PointerAlignmentStyle {
+    /// Align pointer to the left.
+    PAS_Left,
+    /// Align pointer to the right.
+    PAS_Right,
+    /// Align pointer in the middle.
+    PAS_Middle
+  };
 
-  /// \brief If \c true, analyze the formatted file for the most common binding
-  /// and use \c PointerBindsToType only as fallback.
-  bool DerivePointerBinding;
+  /// Pointer and reference alignment style.
+  PointerAlignmentStyle PointerAlignment;
+
+  /// \brief If \c true, analyze the formatted file for the most common
+  /// alignment of & and *. \c PointerAlignment is then used only as fallback.
+  bool DerivePointerAlignment;
 
   /// \brief The extra indent or outdent of access modifiers, e.g. \c public:.
   int AccessModifierOffset;
@@ -322,6 +341,9 @@ struct FormatStyle {
   /// which should not be split into lines or otherwise changed.
   std::string CommentPragmas;
 
+  /// \brief Disables formatting at all.
+  bool DisableFormat;
+
   /// \brief A vector of macros that should be interpreted as foreach loops
   /// instead of as function calls.
   ///
@@ -361,7 +383,7 @@ struct FormatStyle {
            ColumnLimit == R.ColumnLimit &&
            ConstructorInitializerAllOnOneLineOrOnePerLine ==
                R.ConstructorInitializerAllOnOneLineOrOnePerLine &&
-           DerivePointerBinding == R.DerivePointerBinding &&
+           DerivePointerAlignment == R.DerivePointerAlignment &&
            ExperimentalAutoDetectBinPacking ==
                R.ExperimentalAutoDetectBinPacking &&
            IndentCaseLabels == R.IndentCaseLabels &&
@@ -379,7 +401,7 @@ struct FormatStyle {
            PenaltyBreakString == R.PenaltyBreakString &&
            PenaltyExcessCharacter == R.PenaltyExcessCharacter &&
            PenaltyReturnTypeOnItsOwnLine == R.PenaltyReturnTypeOnItsOwnLine &&
-           PointerBindsToType == R.PointerBindsToType &&
+           PointerAlignment == R.PointerAlignment &&
            SpacesBeforeTrailingComments == R.SpacesBeforeTrailingComments &&
            Cpp11BracedListStyle == R.Cpp11BracedListStyle &&
            Standard == R.Standard && TabWidth == R.TabWidth &&
@@ -422,6 +444,9 @@ FormatStyle getWebKitStyle();
 /// http://www.gnu.org/prep/standards/standards.html
 FormatStyle getGNUStyle();
 
+/// \brief Returns style indicating formatting should be not applied at all.
+FormatStyle getNoStyle();
+
 /// \brief Gets a predefined style for the specified language by name.
 ///
 /// Currently supported names: LLVM, Google, Chromium, Mozilla. Names are
@@ -438,7 +463,7 @@ bool getPredefinedStyle(StringRef Name, FormatStyle::LanguageKind Language,
 ///
 /// When \c BasedOnStyle is not present, options not present in the YAML
 /// document, are retained in \p Style.
-llvm::error_code parseConfiguration(StringRef Text, FormatStyle *Style);
+std::error_code parseConfiguration(StringRef Text, FormatStyle *Style);
 
 /// \brief Gets configuration in a YAML string.
 std::string configurationAsText(const FormatStyle &Style);
@@ -499,5 +524,10 @@ FormatStyle getStyle(StringRef StyleName, StringRef FileName,
 
 } // end namespace format
 } // end namespace clang
+
+namespace std {
+template <>
+struct is_error_code_enum<clang::format::ParseError> : std::true_type {};
+}
 
 #endif // LLVM_CLANG_FORMAT_FORMAT_H

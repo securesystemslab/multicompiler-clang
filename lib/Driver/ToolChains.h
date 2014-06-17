@@ -534,7 +534,13 @@ public:
   bool isPIEDefault() const override { return true; }
 
   unsigned GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
-    return 1;
+    return 2;
+  }
+
+  virtual bool IsIntegratedAssemblerDefault() const {
+    if (getTriple().getArch() == llvm::Triple::ppc)
+      return true;
+    return Generic_ELF::IsIntegratedAssemblerDefault();
   }
 
 protected:

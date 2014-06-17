@@ -710,7 +710,7 @@ void ConsumedStmtVisitor::VisitBinaryOperator(const BinaryOperator *BinOp) {
       LTest = LEntry->second.getVarTest();
       
     } else {
-      LTest.Var      = NULL;
+      LTest.Var      = nullptr;
       LTest.TestsFor = CS_None;
     }
     
@@ -718,11 +718,11 @@ void ConsumedStmtVisitor::VisitBinaryOperator(const BinaryOperator *BinOp) {
       RTest = REntry->second.getVarTest();
       
     } else {
-      RTest.Var      = NULL;
+      RTest.Var      = nullptr;
       RTest.TestsFor = CS_None;
     }
-    
-    if (!(LTest.Var == NULL && RTest.Var == NULL))
+
+    if (!(LTest.Var == nullptr && RTest.Var == nullptr))
       PropagationMap.insert(PairType(BinOp, PropagationInfo(BinOp,
         static_cast<EffectiveOp>(BinOp->getOpcode() == BO_LOr), LTest, RTest)));
     
@@ -739,16 +739,6 @@ void ConsumedStmtVisitor::VisitBinaryOperator(const BinaryOperator *BinOp) {
   }
 }
 
-static bool isStdNamespace(const DeclContext *DC) {
-  if (!DC->isNamespace()) return false;
-  while (DC->getParent()->isNamespace())
-    DC = DC->getParent();
-  const NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC);
-
-  return ND && ND->getName() == "std" &&
-         ND->getDeclContext()->isTranslationUnit();
-}
-
 void ConsumedStmtVisitor::VisitCallExpr(const CallExpr *Call) {
   const FunctionDecl *FunDecl = Call->getDirectCallee();
   if (!FunDecl)
@@ -756,14 +746,13 @@ void ConsumedStmtVisitor::VisitCallExpr(const CallExpr *Call) {
 
   // Special case for the std::move function.
   // TODO: Make this more specific. (Deferred)
-  if (Call->getNumArgs() == 1 &&
-      FunDecl->getNameAsString() == "move" &&
-      isStdNamespace(FunDecl->getDeclContext())) {
+  if (Call->getNumArgs() == 1 && FunDecl->getNameAsString() == "move" &&
+      FunDecl->isInStdNamespace()) {
     copyInfo(Call->getArg(0), Call, CS_Consumed);
     return;
   }
 
-  handleCall(Call, 0, FunDecl);
+  handleCall(Call, nullptr, FunDecl);
   propagateReturnType(Call, FunDecl);
 }
 
@@ -1072,9 +1061,9 @@ void ConsumedBlockInfo::addInfo(const CFGBlock *Block,
 
 void ConsumedBlockInfo::addInfo(const CFGBlock *Block,
                                 ConsumedStateMap *StateMap) {
-  
-  assert(Block != NULL && "Block pointer must not be NULL");
-  
+
+  assert(Block && "Block pointer must not be NULL");
+
   ConsumedStateMap *Entry = StateMapsArray[Block->getBlockID()];
     
   if (Entry) {
@@ -1096,7 +1085,7 @@ ConsumedStateMap* ConsumedBlockInfo::borrowInfo(const CFGBlock *Block) {
 void ConsumedBlockInfo::discardInfo(const CFGBlock *Block) {
   unsigned int BlockID = Block->getBlockID();
   delete StateMapsArray[BlockID];
-  StateMapsArray[BlockID] = NULL;
+  StateMapsArray[BlockID] = nullptr;
 }
 
 ConsumedStateMap* ConsumedBlockInfo::getInfo(const CFGBlock *Block) {
@@ -1106,7 +1095,7 @@ ConsumedStateMap* ConsumedBlockInfo::getInfo(const CFGBlock *Block) {
   if (isBackEdgeTarget(Block)) {
     return new ConsumedStateMap(*StateMap);
   } else {
-    StateMapsArray[Block->getBlockID()] = NULL;
+    StateMapsArray[Block->getBlockID()] = nullptr;
     return StateMap;
   }
 }
@@ -1119,8 +1108,8 @@ bool ConsumedBlockInfo::isBackEdge(const CFGBlock *From, const CFGBlock *To) {
 }
 
 bool ConsumedBlockInfo::isBackEdgeTarget(const CFGBlock *Block) {
-  assert(Block != NULL && "Block pointer must not be NULL");
-  
+  assert(Block && "Block pointer must not be NULL");
+
   // Anything with less than two predecessors can't be the target of a back
   // edge.
   if (Block->pred_size() < 2)
@@ -1356,7 +1345,7 @@ bool ConsumedAnalyzer::splitState(const CFGBlock *CurrBlock,
   if (*++SI)
     BlockInfo.addInfo(*SI, FalseStates.release());
 
-  CurrStates = NULL;
+  CurrStates = nullptr;
   return true;
 }
 
@@ -1385,7 +1374,7 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
   
   // Visit all of the function's basic blocks.
   for (const auto *CurrBlock : *SortedGraph) {
-    if (CurrStates == NULL)
+    if (!CurrStates)
       CurrStates = BlockInfo.getInfo(CurrBlock);
     
     if (!CurrStates) {
@@ -1393,7 +1382,7 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
       
     } else if (!CurrStates->isReachable()) {
       delete CurrStates;
-      CurrStates = NULL;
+      CurrStates = nullptr;
       continue;
     }
     
@@ -1436,8 +1425,8 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
     // TODO: Handle other forms of branching with precision, including while-
     //       and for-loops. (Deferred)
     if (!splitState(CurrBlock, Visitor)) {
-      CurrStates->setSource(NULL);
-      
+      CurrStates->setSource(nullptr);
+
       if (CurrBlock->succ_size() > 1 ||
           (CurrBlock->succ_size() == 1 &&
            (*CurrBlock->succ_begin())->pred_size() > 1)) {
@@ -1446,9 +1435,9 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
         
         for (CFGBlock::const_succ_iterator SI = CurrBlock->succ_begin(),
              SE = CurrBlock->succ_end(); SI != SE; ++SI) {
-          
-          if (*SI == NULL) continue;
-          
+
+          if (*SI == nullptr) continue;
+
           if (BlockInfo.isBackEdge(CurrBlock, *SI)) {
             BlockInfo.borrowInfo(*SI)->intersectAtLoopHead(*SI, CurrBlock,
                                                            CurrStates,
@@ -1463,8 +1452,8 @@ void ConsumedAnalyzer::run(AnalysisDeclContext &AC) {
         
         if (!OwnershipTaken)
           delete CurrStates;
-        
-        CurrStates = NULL;
+
+        CurrStates = nullptr;
       }
     }
     

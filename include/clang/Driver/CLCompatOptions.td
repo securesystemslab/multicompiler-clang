@@ -140,6 +140,8 @@ def _SLASH_Zs : CLFlag<"Zs">, HelpText<"Syntax-check only">,
 
 def _SLASH_M_Group : OptionGroup<"</M group>">, Group<cl_compile_Group>;
 
+def _SLASH_EP : CLFlag<"EP">,
+  HelpText<"Disable linemarker output and preprocess to stdout">;
 def _SLASH_FA : CLFlag<"FA">,
   HelpText<"Output assembly code file during compilation">;
 def _SLASH_Fa : CLJoined<"Fa">,
@@ -152,6 +154,9 @@ def _SLASH_FI : CLJoinedOrSeparate<"FI">,
 def _SLASH_Fe : CLJoined<"Fe">,
   HelpText<"Set output executable file or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
+def _SLASH_Fi : CLCompileJoined<"Fi">,
+  HelpText<"Set preprocess output file name">,
+  MetaVarName<"<file>">;
 def _SLASH_Fo : CLCompileJoined<"Fo">,
   HelpText<"Set output object file, or directory (ends in / or \\)">,
   MetaVarName<"<file or directory>">;
@@ -205,13 +210,11 @@ def _SLASH_clr : CLJoined<"clr">;
 def _SLASH_d2Zi_PLUS : CLFlag<"d2Zi+">;
 def _SLASH_doc : CLJoined<"doc">;
 def _SLASH_EH : CLJoined<"EH">;
-def _SLASH_EP : CLFlag<"EP">;
 def _SLASH_FA_joined : CLJoined<"FA">;
 def _SLASH_favor : CLJoined<"favor">;
 def _SLASH_FC : CLFlag<"FC">;
 def _SLASH_F : CLFlag<"F">;
 def _SLASH_Fd : CLJoined<"Fd">;
-def _SLASH_Fi : CLJoined<"Fi">;
 def _SLASH_Fm : CLJoined<"Fm">;
 def _SLASH_fp : CLJoined<"fp">;
 def _SLASH_Fp : CLJoined<"Fp">;

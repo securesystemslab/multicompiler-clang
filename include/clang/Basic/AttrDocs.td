@@ -33,6 +33,7 @@ def SectionDocs : Documentation {
 The ``section`` attribute allows you to specify a specific section a
 global variable or function should be in after translation.
   }];
+  let Heading = "section (gnu::section, __declspec(allocate))";
 }
 
 def TLSModelDocs : Documentation {
@@ -368,6 +369,15 @@ gets possibly modified by some optimizations into code similar to this:
 
 where the call to "nodupfunc" is duplicated and sunk into the two branches
 of the condition.
+  }];
+}
+
+def NoSplitStackDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``no_split_stack`` attribute disables the emission of the split stack
+preamble for a particular function. It has no effect if ``-fsplit-stack``
+is not specified.
   }];
 }
 
@@ -865,6 +875,15 @@ expression is compared to the type tag.  There are two supported flags:
     MPI_Send(buffer, 1, MPI_DATATYPE_NULL /*, ...  */); // warning: MPI_DATATYPE_NULL
                                                         // was specified but buffer
                                                         // is not a null pointer
+  }];
+}
+
+def FlattenDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``flatten`` attribute causes calls within the attributed function to
+be inlined unless it is impossible to do so, for example if the body of the
+callee is unavailable or if the callee has the ``noinline`` attribute.
   }];
 }
 

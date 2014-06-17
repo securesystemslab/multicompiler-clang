@@ -10,7 +10,9 @@
 #include "TestVisitor.h"
 #include <stack>
 
-namespace clang {
+using namespace clang;
+
+namespace {
 
 class TypeLocVisitor : public ExpectedLocationVisitor<TypeLocVisitor> {
 public:
@@ -529,6 +531,15 @@ TEST(RecursiveASTVisitor, VisitsCompoundLiteralType) {
       TypeLocVisitor::Lang_C));
 }
 
+TEST(RecursiveASTVisitor, VisitsObjCPropertyType) {
+  TypeLocVisitor Visitor;
+  Visitor.ExpectMatch("NSNumber", 2, 33);
+  EXPECT_TRUE(Visitor.runOver(
+      "@class NSNumber; \n"
+      "@interface A @property (retain) NSNumber *x; @end\n",
+      TypeLocVisitor::Lang_OBJC));
+}
+
 TEST(RecursiveASTVisitor, VisitsLambdaExpr) {
   LambdaExprVisitor Visitor;
   Visitor.ExpectMatch("", 1, 12);
@@ -614,5 +625,4 @@ TEST(RecursiveASTVisitor, AttributesAreVisited) {
     "};\n"));
 }
 
-
-} // end namespace clang
+} // end anonymous namespace
