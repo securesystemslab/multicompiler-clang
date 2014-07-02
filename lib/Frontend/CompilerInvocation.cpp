@@ -1787,15 +1787,6 @@ static void ParseTargetArgs(TargetOptions &Opts, ArgList &Args) {
     Opts.Triple = llvm::sys::getDefaultTargetTriple();
 }
 
-static void SaltRNG(ArgList &Args) {
-  // TODO(D3391): Decide and document how to salt.
-  // Repeatable builds for: 1) single developers or 2) across machines?
-  std::vector<std::string> Inputs = Args.getAllArgValues(OPT_INPUT);
-  std::string Salt = std::accumulate(Inputs.begin(), Inputs.end(),
-                                     std::string());
-  llvm::RandomNumberGenerator::SetSalt(Salt);
-}
-
 bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
                                         const char *const *ArgBegin,
                                         const char *const *ArgEnd,
@@ -1850,7 +1841,6 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
   ParsePreprocessorArgs(Res.getPreprocessorOpts(), *Args, FileMgr, Diags);
   ParsePreprocessorOutputArgs(Res.getPreprocessorOutputOpts(), *Args,
                               Res.getFrontendOpts().ProgramAction);
-  SaltRNG(*Args);
 
   return Success;
 }
