@@ -105,8 +105,13 @@ class CompilerInstance : public ModuleLoader {
   /// \brief The ASTReader, if one exists.
   IntrusiveRefCntPtr<ASTReader> ModuleManager;
 
+  /// \brief The module dependency collector for crashdumps
+  std::shared_ptr<ModuleDependencyCollector> ModuleDepCollector;
+
   /// \brief The dependency file generator.
   std::unique_ptr<DependencyFileGenerator> TheDependencyFileGenerator;
+
+  std::vector<std::shared_ptr<DependencyCollector>> DependencyCollectors;
 
   /// \brief The set of top-level modules that has already been loaded,
   /// along with the module map
@@ -464,6 +469,10 @@ public:
   IntrusiveRefCntPtr<ASTReader> getModuleManager() const;
   void setModuleManager(IntrusiveRefCntPtr<ASTReader> Reader);
 
+  std::shared_ptr<ModuleDependencyCollector> getModuleDepCollector() const;
+  void setModuleDepCollector(
+      std::shared_ptr<ModuleDependencyCollector> Collector);
+
   /// }
   /// @name Code Completion
   /// {
@@ -704,6 +713,10 @@ public:
   GlobalModuleIndex *loadGlobalModuleIndex(SourceLocation TriggerLoc) override;
 
   bool lookupMissingImports(StringRef Name, SourceLocation TriggerLoc) override;
+
+  void addDependencyCollector(std::shared_ptr<DependencyCollector> Listener) {
+    DependencyCollectors.push_back(std::move(Listener));
+  }
 };
 
 } // end namespace clang

@@ -76,8 +76,8 @@ template <class T> class OMPVarListClause : public OMPClause {
 
 protected:
   /// \brief Fetches list of variables associated with this clause.
-  llvm::MutableArrayRef<Expr *> getVarRefs() {
-    return llvm::MutableArrayRef<Expr *>(
+  MutableArrayRef<Expr *> getVarRefs() {
+    return MutableArrayRef<Expr *>(
         reinterpret_cast<Expr **>(
             reinterpret_cast<char *>(this) +
             llvm::RoundUpToAlignment(sizeof(T), llvm::alignOf<Expr *>())),
@@ -108,7 +108,7 @@ protected:
       : OMPClause(K, StartLoc, EndLoc), LParenLoc(LParenLoc), NumVars(N) {}
 
 public:
-  typedef llvm::MutableArrayRef<Expr *>::iterator varlist_iterator;
+  typedef MutableArrayRef<Expr *>::iterator varlist_iterator;
   typedef ArrayRef<const Expr *>::iterator varlist_const_iterator;
   typedef llvm::iterator_range<varlist_iterator> varlist_range;
   typedef llvm::iterator_range<varlist_const_iterator> varlist_const_range;
@@ -497,6 +497,162 @@ public:
 
   static bool classof(const OMPClause *T) {
     return T->getClauseKind() == OMPC_proc_bind;
+  }
+
+  StmtRange children() { return StmtRange(); }
+};
+
+/// \brief This represents 'schedule' clause in the '#pragma omp ...' directive.
+///
+/// \code
+/// #pragma omp for schedule(static, 3)
+/// \endcode
+/// In this example directive '#pragma omp for' has 'schedule' clause with
+/// arguments 'static' and '3'.
+///
+class OMPScheduleClause : public OMPClause {
+  friend class OMPClauseReader;
+  /// \brief Location of '('.
+  SourceLocation LParenLoc;
+  /// \brief A kind of the 'schedule' clause.
+  OpenMPScheduleClauseKind Kind;
+  /// \brief Start location of the schedule ind in source code.
+  SourceLocation KindLoc;
+  /// \brief Location of ',' (if any).
+  SourceLocation CommaLoc;
+  /// \brief Chunk size.
+  Stmt *ChunkSize;
+
+  /// \brief Set schedule kind.
+  ///
+  /// \param K Schedule kind.
+  ///
+  void setScheduleKind(OpenMPScheduleClauseKind K) { Kind = K; }
+  /// \brief Sets the location of '('.
+  ///
+  /// \param Loc Location of '('.
+  ///
+  void setLParenLoc(SourceLocation Loc) { LParenLoc = Loc; }
+  /// \brief Set schedule kind start location.
+  ///
+  /// \param KLoc Schedule kind location.
+  ///
+  void setScheduleKindLoc(SourceLocation KLoc) { KindLoc = KLoc; }
+  /// \brief Set location of ','.
+  ///
+  /// \param Loc Location of ','.
+  ///
+  void setCommaLoc(SourceLocation Loc) { CommaLoc = Loc; }
+  /// \brief Set chunk size.
+  ///
+  /// \param E Chunk size.
+  ///
+  void setChunkSize(Expr *E) { ChunkSize = E; }
+
+public:
+  /// \brief Build 'schedule' clause with schedule kind \a Kind and chunk size
+  /// expression \a ChunkSize.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param KLoc Starting location of the argument.
+  /// \param CommaLoc Location of ','.
+  /// \param EndLoc Ending location of the clause.
+  /// \param Kind Schedule kind.
+  /// \param ChunkSize Chunk size.
+  ///
+  OMPScheduleClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                    SourceLocation KLoc, SourceLocation CommaLoc,
+                    SourceLocation EndLoc, OpenMPScheduleClauseKind Kind,
+                    Expr *ChunkSize)
+      : OMPClause(OMPC_schedule, StartLoc, EndLoc), LParenLoc(LParenLoc),
+        Kind(Kind), KindLoc(KLoc), CommaLoc(CommaLoc), ChunkSize(ChunkSize) {}
+
+  /// \brief Build an empty clause.
+  ///
+  explicit OMPScheduleClause()
+      : OMPClause(OMPC_schedule, SourceLocation(), SourceLocation()),
+        Kind(OMPC_SCHEDULE_unknown), ChunkSize(nullptr) {}
+
+  /// \brief Get kind of the clause.
+  ///
+  OpenMPScheduleClauseKind getScheduleKind() const { return Kind; }
+  /// \brief Get location of '('.
+  ///
+  SourceLocation getLParenLoc() { return LParenLoc; }
+  /// \brief Get kind location.
+  ///
+  SourceLocation getScheduleKindLoc() { return KindLoc; }
+  /// \brief Get location of ','.
+  ///
+  SourceLocation getCommaLoc() { return CommaLoc; }
+  /// \brief Get chunk size.
+  ///
+  Expr *getChunkSize() { return dyn_cast_or_null<Expr>(ChunkSize); }
+  /// \brief Get chunk size.
+  ///
+  Expr *getChunkSize() const { return dyn_cast_or_null<Expr>(ChunkSize); }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_schedule;
+  }
+
+  StmtRange children() { return StmtRange(&ChunkSize, &ChunkSize + 1); }
+};
+
+/// \brief This represents 'ordered' clause in the '#pragma omp ...' directive.
+///
+/// \code
+/// #pragma omp for ordered
+/// \endcode
+/// In this example directive '#pragma omp for' has 'ordered' clause.
+///
+class OMPOrderedClause : public OMPClause {
+public:
+  /// \brief Build 'ordered' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  ///
+  OMPOrderedClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_ordered, StartLoc, EndLoc) {}
+
+  /// \brief Build an empty clause.
+  ///
+  OMPOrderedClause()
+      : OMPClause(OMPC_ordered, SourceLocation(), SourceLocation()) {}
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_ordered;
+  }
+
+  StmtRange children() { return StmtRange(); }
+};
+
+/// \brief This represents 'nowait' clause in the '#pragma omp ...' directive.
+///
+/// \code
+/// #pragma omp for nowait
+/// \endcode
+/// In this example directive '#pragma omp for' has 'nowait' clause.
+///
+class OMPNowaitClause : public OMPClause {
+public:
+  /// \brief Build 'nowait' clause.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param EndLoc Ending location of the clause.
+  ///
+  OMPNowaitClause(SourceLocation StartLoc, SourceLocation EndLoc)
+      : OMPClause(OMPC_nowait, StartLoc, EndLoc) {}
+
+  /// \brief Build an empty clause.
+  ///
+  OMPNowaitClause()
+      : OMPClause(OMPC_nowait, SourceLocation(), SourceLocation()) {}
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_nowait;
   }
 
   StmtRange children() { return StmtRange(); }
@@ -1059,6 +1215,66 @@ public:
 
   static bool classof(const OMPClause *T) {
     return T->getClauseKind() == OMPC_copyin;
+  }
+};
+
+/// \brief This represents clause 'copyprivate' in the '#pragma omp ...'
+/// directives.
+///
+/// \code
+/// #pragma omp single copyprivate(a,b)
+/// \endcode
+/// In this example directive '#pragma omp single' has clause 'copyprivate'
+/// with the variables 'a' and 'b'.
+///
+class OMPCopyprivateClause : public OMPVarListClause<OMPCopyprivateClause> {
+  /// \brief Build clause with number of variables \a N.
+  ///
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param N Number of the variables in the clause.
+  ///
+  OMPCopyprivateClause(SourceLocation StartLoc, SourceLocation LParenLoc,
+                       SourceLocation EndLoc, unsigned N)
+      : OMPVarListClause<OMPCopyprivateClause>(OMPC_copyprivate, StartLoc,
+                                               LParenLoc, EndLoc, N) {}
+
+  /// \brief Build an empty clause.
+  ///
+  /// \param N Number of variables.
+  ///
+  explicit OMPCopyprivateClause(unsigned N)
+      : OMPVarListClause<OMPCopyprivateClause>(
+            OMPC_copyprivate, SourceLocation(), SourceLocation(),
+            SourceLocation(), N) {}
+
+public:
+  /// \brief Creates clause with a list of variables \a VL.
+  ///
+  /// \param C AST context.
+  /// \param StartLoc Starting location of the clause.
+  /// \param LParenLoc Location of '('.
+  /// \param EndLoc Ending location of the clause.
+  /// \param VL List of references to the variables.
+  ///
+  static OMPCopyprivateClause *
+  Create(const ASTContext &C, SourceLocation StartLoc, SourceLocation LParenLoc,
+         SourceLocation EndLoc, ArrayRef<Expr *> VL);
+  /// \brief Creates an empty clause with \a N variables.
+  ///
+  /// \param C AST context.
+  /// \param N The number of variables.
+  ///
+  static OMPCopyprivateClause *CreateEmpty(const ASTContext &C, unsigned N);
+
+  StmtRange children() {
+    return StmtRange(reinterpret_cast<Stmt **>(varlist_begin()),
+                     reinterpret_cast<Stmt **>(varlist_end()));
+  }
+
+  static bool classof(const OMPClause *T) {
+    return T->getClauseKind() == OMPC_copyprivate;
   }
 };
 

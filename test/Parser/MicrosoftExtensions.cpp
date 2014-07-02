@@ -118,7 +118,7 @@ typedef COM_CLASS_TEMPLATE_REF<struct_with_uuid, __uuidof(struct_with_uuid)> COM
 
 COM_CLASS_TEMPLATE_REF<int, __uuidof(struct_with_uuid)> good_template_arg;
 
-COM_CLASS_TEMPLATE<int, __uuidof(struct_with_uuid)> bad_template_arg; // expected-error {{non-type template argument of type 'const _GUID' is not a constant expression}}
+COM_CLASS_TEMPLATE<int, __uuidof(struct_with_uuid)> bad_template_arg; // expected-error {{non-type template argument of type 'const _GUID' cannot be converted to a value of type 'const GUID *' (aka 'const _GUID *')}}
 
 namespace PR16911 {
 struct __declspec(uuid("{12345678-1234-1234-1234-1234567890aB}")) uuid;
@@ -226,103 +226,6 @@ void interface_test() {
 }
 
 __int64 x7 = __int64(0);
-
-
-namespace If_exists_test {
-
-class IF_EXISTS {
-private:
-    typedef int Type;
-};
-
-int __if_exists_test() {
-  int b=0;
-  __if_exists(IF_EXISTS::Type) {
-     b++;
-     b++;
-  }
-  __if_exists(IF_EXISTS::Type_not) {
-     this will not compile.
-  }
-  __if_not_exists(IF_EXISTS::Type) {
-     this will not compile.
-  }
-  __if_not_exists(IF_EXISTS::Type_not) {
-     b++;
-     b++;
-  }
-}
-
-
-__if_exists(IF_EXISTS::Type) {
-  int var23;
-}
-
-__if_exists(IF_EXISTS::Type_not) {
- this will not compile.
-}
-
-__if_not_exists(IF_EXISTS::Type) {
- this will not compile.
-}
-
-__if_not_exists(IF_EXISTS::Type_not) {
-  int var244;
-}
-
-int __if_exists_init_list() {
-
-  int array1[] = {
-    0,
-    __if_exists(IF_EXISTS::Type) {2, }
-    3
-  };
-
-  int array2[] = {
-    0,
-    __if_exists(IF_EXISTS::Type_not) { this will not compile }
-    3
-  };
-
-  int array3[] = {
-    0,
-    __if_not_exists(IF_EXISTS::Type_not) {2, }
-    3
-  };
-
-  int array4[] = {
-    0,
-    __if_not_exists(IF_EXISTS::Type) { this will not compile }
-    3
-  };
-
-}
-
-
-class IF_EXISTS_CLASS_TEST {
-  __if_exists(IF_EXISTS::Type) {
-    // __if_exists, __if_not_exists can nest
-    __if_not_exists(IF_EXISTS::Type_not) {
-      int var123;
-    }
-    int var23;
-  }
-
-  __if_exists(IF_EXISTS::Type_not) {
-   this will not compile.
-  }
-
-  __if_not_exists(IF_EXISTS::Type) {
-   this will not compile.
-  }
-
-  __if_not_exists(IF_EXISTS::Type_not) {
-    int var244;
-  }
-};
-
-}
-
 
 int __identifier(generic) = 3;
 int __identifier(int) = 4;

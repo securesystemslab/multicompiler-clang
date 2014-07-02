@@ -271,8 +271,7 @@ def DeprecatedObjCIsaUsage : DiagGroup<"deprecated-objc-isa-usage">;
 def Packed : DiagGroup<"packed">;
 def Padded : DiagGroup<"padded">;
 def PointerArith : DiagGroup<"pointer-arith">;
-def PoundWarning : DiagGroup<"#warnings">,
-                   DiagCategory<"#warning Directive">;
+def PoundWarning : DiagGroup<"#warnings">;
 def PoundPragmaMessage : DiagGroup<"#pragma-messages">,
                          DiagCategory<"#pragma message Directive">;
 def : DiagGroup<"pointer-to-int-cast">;
@@ -383,9 +382,7 @@ def UnnamedTypeTemplateArgs : DiagGroup<"unnamed-type-template-args",
                                         [CXX98CompatUnnamedTypeTemplateArgs]>;
 def UnsupportedFriend : DiagGroup<"unsupported-friend">;
 def UnusedArgument : DiagGroup<"unused-argument">;
-def UnusedSanitizeArgument : DiagGroup<"unused-sanitize-argument">;
-def UnusedCommandLineArgument : DiagGroup<"unused-command-line-argument",
-                                          [UnusedSanitizeArgument]>;
+def UnusedCommandLineArgument : DiagGroup<"unused-command-line-argument">;
 def InvalidCommandLineArgument : DiagGroup<"invalid-command-line-argument">;
 def UnusedComparison : DiagGroup<"unused-comparison">;
 def UnusedExceptionParameter : DiagGroup<"unused-exception-parameter">;
@@ -710,3 +707,4 @@ def BackendOptimizationRemarkAnalysis : DiagGroup<"pass-analysis">;
 
 // Instrumentation based profiling warnings.
 def ProfileInstrOutOfDate : DiagGroup<"profile-instr-out-of-date">;
+def ProfileInstrUnprofiled : DiagGroup<"profile-instr-unprofiled">;

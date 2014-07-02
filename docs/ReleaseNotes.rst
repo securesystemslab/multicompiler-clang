@@ -97,6 +97,15 @@ passes via three new flags: `-Rpass`, `-Rpass-missed` and `-Rpass-analysis`.
 These flags take a POSIX regular expression which indicates the name
 of the pass (or passes) that should emit optimization remarks.
 
+New Pragmas in Clang
+-----------------------
+
+Loop optimization hints can be specified using the new `#pragma clang loop`
+directive just prior to the desired loop. The directive allows vectorization,
+interleaving, and unrolling to be enabled or disabled. Vector width as well
+as interleave and unrolling count can be manually specified.  See language
+extensions for details.
+
 C Language Changes in Clang
 ---------------------------
 

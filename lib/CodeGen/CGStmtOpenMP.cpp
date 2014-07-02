@@ -32,19 +32,17 @@ void CodeGenFunction::EmitOMPParallelDirective(const OMPParallelDirective &S) {
     CodeGenFunction CGF(CGM, true);
     CGCapturedStmtInfo CGInfo(*CS, CS->getCapturedRegionKind());
     CGF.CapturedStmtInfo = &CGInfo;
-    OutlinedFn = CGF.GenerateCapturedStmtFunction(
-        CS->getCapturedDecl(), CS->getCapturedRecordDecl(), CS->getLocStart());
+    OutlinedFn = CGF.GenerateCapturedStmtFunction(*CS);
   }
 
   // Build call __kmpc_fork_call(loc, 1, microtask, captured_struct/*context*/)
   llvm::Value *Args[] = {
-    CGM.getOpenMPRuntime().EmitOpenMPUpdateLocation(*this, S.getLocStart()),
-    Builder.getInt32(1), // Number of arguments after 'microtask' argument
-                         // (there is only one additional argument - 'context')
-    Builder.CreateBitCast(OutlinedFn,
-                          CGM.getOpenMPRuntime().getKmpc_MicroPointerTy()),
-    EmitCastToVoidPtr(CapturedStruct)
-  };
+      CGM.getOpenMPRuntime().EmitOpenMPUpdateLocation(*this, S.getLocStart()),
+      Builder.getInt32(1), // Number of arguments after 'microtask' argument
+      // (there is only one additional argument - 'context')
+      Builder.CreateBitCast(OutlinedFn,
+                            CGM.getOpenMPRuntime().getKmpc_MicroPointerTy()),
+      EmitCastToVoidPtr(CapturedStruct)};
   llvm::Constant *RTLFn = CGM.getOpenMPRuntime().CreateRuntimeFunction(
       CGOpenMPRuntime::OMPRTL__kmpc_fork_call);
   EmitRuntimeCall(RTLFn, Args);
@@ -77,5 +75,18 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
 }
 
 void CodeGenFunction::EmitOMPForDirective(const OMPForDirective &) {
-  llvm_unreachable("Not supported yet.");
+  llvm_unreachable("CodeGen for 'omp for' is not supported yet.");
 }
+
+void CodeGenFunction::EmitOMPSectionsDirective(const OMPSectionsDirective &) {
+  llvm_unreachable("CodeGen for 'omp sections' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPSectionDirective(const OMPSectionDirective &) {
+  llvm_unreachable("CodeGen for 'omp section' is not supported yet.");
+}
+
+void CodeGenFunction::EmitOMPSingleDirective(const OMPSingleDirective &) {
+  llvm_unreachable("CodeGen for 'omp single' is not supported yet.");
+}
+

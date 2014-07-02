@@ -314,6 +314,19 @@ void CodeGenModule::clear() {
   DeferredDeclsToEmit.clear();
 }
 
+void InstrProfStats::reportDiagnostics(DiagnosticsEngine &Diags,
+                                       StringRef MainFile) {
+  if (!hasDiagnostics())
+    return;
+  if (VisitedInMainFile > 0 && VisitedInMainFile == MissingInMainFile) {
+    if (MainFile.empty())
+      MainFile = "<stdin>";
+    Diags.Report(diag::warn_profile_data_unprofiled) << MainFile;
+  } else
+    Diags.Report(diag::warn_profile_data_out_of_date) << Visited << Missing
+                                                      << Mismatched;
+}
+
 void CodeGenModule::Release() {
   EmitDeferred();
   applyReplacements();
@@ -327,9 +340,8 @@ void CodeGenModule::Release() {
   if (getCodeGenOpts().ProfileInstrGenerate)
     if (llvm::Function *PGOInit = CodeGenPGO::emitInitialization(*this))
       AddGlobalCtor(PGOInit, 0);
-  if (PGOReader && PGOStats.isOutOfDate())
-    getDiags().Report(diag::warn_profile_data_out_of_date)
-        << PGOStats.Visited << PGOStats.Missing << PGOStats.Mismatched;
+  if (PGOReader && PGOStats.hasDiagnostics())
+    PGOStats.reportDiagnostics(getDiags(), getCodeGenOpts().MainFileName);
   EmitCtorList(GlobalCtors, "llvm.global_ctors");
   EmitCtorList(GlobalDtors, "llvm.global_dtors");
   EmitGlobalAnnotations();
@@ -351,6 +363,23 @@ void CodeGenModule::Release() {
     // (and warn about it, too).
     getModule().addModuleFlag(llvm::Module::Warning, "Debug Info Version",
                               llvm::DEBUG_METADATA_VERSION);
+
+  // We need to record the widths of enums and wchar_t, so that we can generate
+  // the correct build attributes in the ARM backend.
+  llvm::Triple::ArchType Arch = Context.getTargetInfo().getTriple().getArch();
+  if (   Arch == llvm::Triple::arm
+      || Arch == llvm::Triple::armeb
+      || Arch == llvm::Triple::thumb
+      || Arch == llvm::Triple::thumbeb) {
+    // Width of wchar_t in bytes
+    uint64_t WCharWidth =
+        Context.getTypeSizeInChars(Context.getWideCharType()).getQuantity();
+    getModule().addModuleFlag(llvm::Module::Error, "wchar_size", WCharWidth);
+
+    // The minimum width of an enum in bytes
+    uint64_t EnumWidth = Context.getLangOpts().ShortEnums ? 1 : 4;
+    getModule().addModuleFlag(llvm::Module::Error, "min_enum_size", EnumWidth);
+  }
 
   SimplifyPersonality();
 
@@ -1929,21 +1958,57 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
   if (NeedsGlobalCtor || NeedsGlobalDtor)
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
 
-  // If we are compiling with ASan, add metadata indicating dynamically
-  // initialized (and not blacklisted) globals.
-  if (SanOpts.Address && NeedsGlobalCtor &&
-      !SanitizerBlacklist->isIn(*GV, "init")) {
-    llvm::NamedMDNode *DynamicInitializers = TheModule.getOrInsertNamedMetadata(
-        "llvm.asan.dynamically_initialized_globals");
-    llvm::Value *GlobalToAdd[] = { GV };
-    llvm::MDNode *ThisGlobal = llvm::MDNode::get(VMContext, GlobalToAdd);
-    DynamicInitializers->addOperand(ThisGlobal);
-  }
+  reportGlobalToASan(GV, D->getLocation(), NeedsGlobalCtor);
 
   // Emit global variable debug information.
   if (CGDebugInfo *DI = getModuleDebugInfo())
     if (getCodeGenOpts().getDebugInfo() >= CodeGenOptions::LimitedDebugInfo)
       DI->EmitGlobalVariable(GV, D);
+}
+
+void CodeGenModule::reportGlobalToASan(llvm::GlobalVariable *GV,
+                                       SourceLocation Loc, bool IsDynInit) {
+  if (!SanOpts.Address)
+    return;
+  IsDynInit &= !SanitizerBlacklist->isIn(*GV, "init");
+  bool IsBlacklisted = SanitizerBlacklist->isIn(*GV);
+
+  llvm::LLVMContext &LLVMCtx = TheModule.getContext();
+
+  llvm::GlobalVariable *LocDescr = nullptr;
+  if (!IsBlacklisted) {
+    // Don't generate source location if a global is blacklisted - it won't
+    // be instrumented anyway.
+    PresumedLoc PLoc = Context.getSourceManager().getPresumedLoc(Loc);
+    if (PLoc.isValid()) {
+      llvm::Constant *LocData[] = {
+          GetAddrOfConstantCString(PLoc.getFilename()),
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(LLVMCtx), PLoc.getLine()),
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(LLVMCtx),
+                                 PLoc.getColumn()),
+      };
+      auto LocStruct = llvm::ConstantStruct::getAnon(LocData);
+      LocDescr = new llvm::GlobalVariable(TheModule, LocStruct->getType(), true,
+                                          llvm::GlobalValue::PrivateLinkage,
+                                          LocStruct, ".asan_loc_descr");
+      LocDescr->setUnnamedAddr(true);
+      // Add LocDescr to llvm.compiler.used, so that it won't be removed by
+      // the optimizer before the ASan instrumentation pass.
+      addCompilerUsedGlobal(LocDescr);
+    }
+  }
+
+  llvm::Value *GlobalMetadata[] = {
+      GV,
+      LocDescr,
+      llvm::ConstantInt::get(llvm::Type::getInt1Ty(LLVMCtx), IsDynInit),
+      llvm::ConstantInt::get(llvm::Type::getInt1Ty(LLVMCtx), IsBlacklisted)
+  };
+
+  llvm::MDNode *ThisGlobal = llvm::MDNode::get(VMContext, GlobalMetadata);
+  llvm::NamedMDNode *AsanGlobals =
+      TheModule.getOrInsertNamedMetadata("llvm.asan.globals");
+  AsanGlobals->addOperand(ThisGlobal);
 }
 
 static bool isVarDeclStrongDefinition(const VarDecl *D, bool NoCommon) {
@@ -2750,6 +2815,8 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S) {
   auto GV = GenerateStringLiteral(C, LT, *this, GlobalVariableName, Alignment);
   if (Entry)
     Entry->setValue(GV);
+
+  reportGlobalToASan(GV, S->getStrTokenLoc(0));
   return GV;
 }
 

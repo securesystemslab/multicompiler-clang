@@ -2544,6 +2544,18 @@ void FunctionDecl::setDeclsInPrototypeScope(ArrayRef<NamedDecl *> NewDecls) {
     NamedDecl **A = new (getASTContext()) NamedDecl*[NewDecls.size()];
     std::copy(NewDecls.begin(), NewDecls.end(), A);
     DeclsInPrototypeScope = ArrayRef<NamedDecl *>(A, NewDecls.size());
+    // Move declarations introduced in prototype to the function context.
+    for (auto I : NewDecls) {
+      DeclContext *DC = I->getDeclContext();
+      // Forward-declared reference to an enumeration is not added to
+      // declaration scope, so skip declaration that is absent from its
+      // declaration contexts.
+      if (DC->containsDecl(I)) {
+          DC->removeDecl(I);
+          I->setDeclContext(this);
+          addDecl(I);
+      }
+    }
   }
 }
 
@@ -2673,6 +2685,26 @@ bool FunctionDecl::doesDeclarationForceExternallyVisibleDefinition() const {
       return false;
   }
   return FoundBody;
+}
+
+SourceRange FunctionDecl::getReturnTypeSourceRange() const {
+  const TypeSourceInfo *TSI = getTypeSourceInfo();
+  if (!TSI)
+    return SourceRange();
+  FunctionTypeLoc FTL =
+      TSI->getTypeLoc().IgnoreParens().getAs<FunctionTypeLoc>();
+  if (!FTL)
+    return SourceRange();
+
+  // Skip self-referential return types.
+  const SourceManager &SM = getASTContext().getSourceManager();
+  SourceRange RTRange = FTL.getReturnLoc().getSourceRange();
+  SourceLocation Boundary = getNameInfo().getLocStart();
+  if (RTRange.isInvalid() || Boundary.isInvalid() ||
+      !SM.isBeforeInTranslationUnit(RTRange.getEnd(), Boundary))
+    return SourceRange();
+
+  return RTRange;
 }
 
 /// \brief For an inline function definition in C, or for a gnu_inline function

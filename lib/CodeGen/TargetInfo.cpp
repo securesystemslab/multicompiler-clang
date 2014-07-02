@@ -2590,8 +2590,8 @@ llvm::Value *X86_64ABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
     llvm::Type *PTyHi = llvm::PointerType::getUnqual(TyHi);
     llvm::Value *GPAddr = CGF.Builder.CreateGEP(RegAddr, gp_offset);
     llvm::Value *FPAddr = CGF.Builder.CreateGEP(RegAddr, fp_offset);
-    llvm::Value *RegLoAddr = TyLo->isFloatingPointTy() ? FPAddr : GPAddr;
-    llvm::Value *RegHiAddr = TyLo->isFloatingPointTy() ? GPAddr : FPAddr;
+    llvm::Value *RegLoAddr = TyLo->isFPOrFPVectorTy() ? FPAddr : GPAddr;
+    llvm::Value *RegHiAddr = TyLo->isFPOrFPVectorTy() ? GPAddr : FPAddr;
     llvm::Value *V =
       CGF.Builder.CreateLoad(CGF.Builder.CreateBitCast(RegLoAddr, PTyLo));
     CGF.Builder.CreateStore(V, CGF.Builder.CreateStructGEP(Tmp, 0));
@@ -3018,8 +3018,12 @@ llvm::Value *PPC64_SVR4_ABIInfo::EmitVAArg(llvm::Value *VAListAddr,
   if (CplxBaseSize && CplxBaseSize < 8) {
     llvm::Value *RealAddr = Builder.CreatePtrToInt(Addr, CGF.Int64Ty);
     llvm::Value *ImagAddr = RealAddr;
-    RealAddr = Builder.CreateAdd(RealAddr, Builder.getInt64(8 - CplxBaseSize));
-    ImagAddr = Builder.CreateAdd(ImagAddr, Builder.getInt64(16 - CplxBaseSize));
+    if (CGF.CGM.getDataLayout().isBigEndian()) {
+      RealAddr = Builder.CreateAdd(RealAddr, Builder.getInt64(8 - CplxBaseSize));
+      ImagAddr = Builder.CreateAdd(ImagAddr, Builder.getInt64(16 - CplxBaseSize));
+    } else {
+      ImagAddr = Builder.CreateAdd(ImagAddr, Builder.getInt64(8));
+    }
     llvm::Type *PBaseTy = llvm::PointerType::getUnqual(CGF.ConvertType(BaseTy));
     RealAddr = Builder.CreateIntToPtr(RealAddr, PBaseTy);
     ImagAddr = Builder.CreateIntToPtr(ImagAddr, PBaseTy);
@@ -3037,7 +3041,7 @@ llvm::Value *PPC64_SVR4_ABIInfo::EmitVAArg(llvm::Value *VAListAddr,
   // If the argument is smaller than 8 bytes, it is right-adjusted in
   // its doubleword slot.  Adjust the pointer to pick it up from the
   // correct offset.
-  if (SizeInBytes < 8) {
+  if (SizeInBytes < 8 && CGF.CGM.getDataLayout().isBigEndian()) {
     llvm::Value *AddrAsInt = Builder.CreatePtrToInt(Addr, CGF.Int64Ty);
     AddrAsInt = Builder.CreateAdd(AddrAsInt, Builder.getInt64(8 - SizeInBytes));
     Addr = Builder.CreateIntToPtr(AddrAsInt, BP);
@@ -4050,7 +4054,7 @@ void ARMABIInfo::markAllocatedVFPs(unsigned Alignment,
 /// which have been allocated. It is valid for AllocatedGPRs to go above 4,
 /// this represents arguments being stored on the stack.
 void ARMABIInfo::markAllocatedGPRs(unsigned Alignment,
-                                          unsigned NumRequired) const {
+                                   unsigned NumRequired) const {
   assert((Alignment == 1 || Alignment == 2) && "Alignment must be 4 or 8 bytes");
 
   if (Alignment == 2 && AllocatedGPRs & 0x1)
@@ -4193,8 +4197,11 @@ ABIArgInfo ARMABIInfo::classifyArgumentType(QualType Ty, bool isVariadic,
       getABIKind() == ARMABIInfo::AAPCS)
     ABIAlign = std::min(std::max(TyAlign, (uint64_t)4), (uint64_t)8);
   if (getContext().getTypeSizeInChars(Ty) > CharUnits::fromQuantity(64)) {
-    // Update Allocated GPRs
-    markAllocatedGPRs(1, 1);
+    // Update Allocated GPRs. Since this is only used when the size of the
+    // argument is greater than 64 bytes, this will always use up any available
+    // registers (of which there are 4). We also don't care about getting the
+    // alignment right, because general-purpose registers cannot be back-filled.
+    markAllocatedGPRs(1, 4);
     return ABIArgInfo::getIndirect(TyAlign, /*ByVal=*/true,
            /*Realign=*/TyAlign > ABIAlign);
   }

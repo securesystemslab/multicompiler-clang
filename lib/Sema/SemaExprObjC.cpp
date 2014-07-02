@@ -555,7 +555,7 @@ ExprResult Sema::BuildObjCBoxedExpr(SourceRange SR, Expr *ValueExpr) {
         break;
       }
     }
-    
+    CheckForIntOverflow(ValueExpr);
     // FIXME:  Do I need to do anything special with BoolTy expressions?
     
     // Look for the appropriate method within NSNumber.
@@ -976,6 +976,8 @@ ExprResult Sema::ParseObjCEncodeExpression(SourceLocation AtLoc,
 
 static bool HelperToDiagnoseMismatchedMethodsInGlobalPool(Sema &S,
                                                SourceLocation AtLoc,
+                                               SourceLocation LParenLoc,
+                                               SourceLocation RParenLoc,
                                                ObjCMethodDecl *Method,
                                                ObjCMethodList &MethList) {
   ObjCMethodList *M = &MethList;
@@ -991,7 +993,8 @@ static bool HelperToDiagnoseMismatchedMethodsInGlobalPool(Sema &S,
       if (!Warned) {
         Warned = true;
         S.Diag(AtLoc, diag::warning_multiple_selectors)
-          << Method->getSelector();
+          << Method->getSelector() << FixItHint::CreateInsertion(LParenLoc, "(")
+          << FixItHint::CreateInsertion(RParenLoc, ")");
         S.Diag(Method->getLocation(), diag::note_method_declared_at)
           << Method->getDeclName();
       }
@@ -1003,23 +1006,26 @@ static bool HelperToDiagnoseMismatchedMethodsInGlobalPool(Sema &S,
 }
 
 static void DiagnoseMismatchedSelectors(Sema &S, SourceLocation AtLoc,
-                                        ObjCMethodDecl *Method) {
-  if (S.Diags.isIgnored(diag::warning_multiple_selectors, SourceLocation()))
+                                        ObjCMethodDecl *Method,
+                                        SourceLocation LParenLoc,
+                                        SourceLocation RParenLoc,
+                                        bool WarnMultipleSelectors) {
+  if (!WarnMultipleSelectors ||
+      S.Diags.isIgnored(diag::warning_multiple_selectors, SourceLocation()))
     return;
   bool Warned = false;
   for (Sema::GlobalMethodPool::iterator b = S.MethodPool.begin(),
        e = S.MethodPool.end(); b != e; b++) {
     // first, instance methods
     ObjCMethodList &InstMethList = b->second.first;
-    if (HelperToDiagnoseMismatchedMethodsInGlobalPool(S, AtLoc,
+    if (HelperToDiagnoseMismatchedMethodsInGlobalPool(S, AtLoc, LParenLoc, RParenLoc,
                                                       Method, InstMethList))
       Warned = true;
         
     // second, class methods
     ObjCMethodList &ClsMethList = b->second.second;
-    if (HelperToDiagnoseMismatchedMethodsInGlobalPool(S, AtLoc,
-                                                      Method, ClsMethList) ||
-        Warned)
+    if (HelperToDiagnoseMismatchedMethodsInGlobalPool(S, AtLoc, LParenLoc, RParenLoc,
+                                                      Method, ClsMethList) || Warned)
       return;
   }
 }
@@ -1028,7 +1034,8 @@ ExprResult Sema::ParseObjCSelectorExpression(Selector Sel,
                                              SourceLocation AtLoc,
                                              SourceLocation SelLoc,
                                              SourceLocation LParenLoc,
-                                             SourceLocation RParenLoc) {
+                                             SourceLocation RParenLoc,
+                                             bool WarnMultipleSelectors) {
   ObjCMethodDecl *Method = LookupInstanceMethodInGlobalPool(Sel,
                              SourceRange(LParenLoc, RParenLoc), false, false);
   if (!Method)
@@ -1046,7 +1053,8 @@ ExprResult Sema::ParseObjCSelectorExpression(Selector Sel,
     } else
         Diag(SelLoc, diag::warn_undeclared_selector) << Sel;
   } else
-    DiagnoseMismatchedSelectors(*this, AtLoc, Method);
+    DiagnoseMismatchedSelectors(*this, AtLoc, Method, LParenLoc, RParenLoc,
+                                WarnMultipleSelectors);
   
   if (Method &&
       Method->getImplementationControl() != ObjCMethodDecl::Optional &&
@@ -2640,7 +2648,14 @@ ExprResult Sema::BuildInstanceMessage(Expr *Receiver,
   }
 
   if (getLangOpts().ObjCAutoRefCount) {
-    DiagnoseARCUseOfWeakReceiver(*this, Receiver);
+    // Do not warn about IBOutlet weak property receivers being set to null
+    // as this cannot asynchronously happen.
+    bool WarnWeakReceiver = true;
+    if (isImplicit && Method)
+      if (const ObjCPropertyDecl *PropertyDecl = Method->findPropertyDecl())
+        WarnWeakReceiver = !PropertyDecl->hasAttr<IBOutletAttr>();
+    if (WarnWeakReceiver)
+      DiagnoseARCUseOfWeakReceiver(*this, Receiver);
     
     // In ARC, annotate delegate init calls.
     if (Result->getMethodFamily() == OMF_init &&
@@ -3445,6 +3460,29 @@ void Sema::CheckTollFreeBridgeCast(QualType castType, Expr *castExpr) {
   }
 }
 
+void Sema::CheckObjCBridgeRelatedCast(QualType castType, Expr *castExpr) {
+  QualType SrcType = castExpr->getType();
+  if (ObjCPropertyRefExpr *PRE = dyn_cast<ObjCPropertyRefExpr>(castExpr)) {
+    if (PRE->isExplicitProperty()) {
+      if (ObjCPropertyDecl *PDecl = PRE->getExplicitProperty())
+        SrcType = PDecl->getType();
+    }
+    else if (PRE->isImplicitProperty()) {
+      if (ObjCMethodDecl *Getter = PRE->getImplicitPropertyGetter())
+        SrcType = Getter->getReturnType();
+      
+    }
+  }
+  
+  ARCConversionTypeClass srcExprACTC = classifyTypeForARCConversion(SrcType);
+  ARCConversionTypeClass castExprACTC = classifyTypeForARCConversion(castType);
+  if (srcExprACTC != ACTC_retainable || castExprACTC != ACTC_coreFoundation)
+    return;
+  CheckObjCBridgeRelatedConversions(castExpr->getLocStart(),
+                                    castType, SrcType, castExpr);
+  return;
+}
+
 bool Sema::CheckTollFreeBridgeStaticCast(QualType castType, Expr *castExpr,
                                          CastKind &Kind) {
   if (!getLangOpts().ObjC1)
@@ -3617,7 +3655,8 @@ Sema::CheckObjCBridgeRelatedConversions(SourceLocation Loc,
 Sema::ARCConversionResult
 Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
                              Expr *&castExpr, CheckedConversionKind CCK,
-                             bool DiagnoseCFAudited) {
+                             bool DiagnoseCFAudited,
+                             BinaryOperatorKind Opc) {
   QualType castExprType = castExpr->getType();
 
   // For the purposes of the classification, we assume reference types
@@ -3711,8 +3750,10 @@ Sema::CheckObjCARCConversion(SourceRange castRange, QualType castType,
   // instead.
   if (!DiagnoseCFAudited || exprACTC != ACTC_retainable ||
       castACTC != ACTC_coreFoundation)
-    diagnoseObjCARCConversion(*this, castRange, castType, castACTC,
-                              castExpr, castExpr, exprACTC, CCK);
+    if (!(exprACTC == ACTC_voidPtr && castACTC == ACTC_retainable &&
+          (Opc == BO_NE || Opc == BO_EQ)))
+      diagnoseObjCARCConversion(*this, castRange, castType, castACTC,
+                                castExpr, castExpr, exprACTC, CCK);
   return ACR_okay;
 }
 

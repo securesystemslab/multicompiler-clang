@@ -218,12 +218,36 @@ struct ARCEntrypoints {
 };
 
 /// This class records statistics on instrumentation based profiling.
-struct InstrProfStats {
-  InstrProfStats() : Visited(0), Missing(0), Mismatched(0) {}
-  bool isOutOfDate() { return Missing || Mismatched; }
+class InstrProfStats {
+  uint32_t VisitedInMainFile;
+  uint32_t MissingInMainFile;
   uint32_t Visited;
   uint32_t Missing;
   uint32_t Mismatched;
+
+public:
+  InstrProfStats()
+      : VisitedInMainFile(0), MissingInMainFile(0), Visited(0), Missing(0),
+        Mismatched(0) {}
+  /// Record that we've visited a function and whether or not that function was
+  /// in the main source file.
+  void addVisited(bool MainFile) {
+    if (MainFile)
+      ++VisitedInMainFile;
+    ++Visited;
+  }
+  /// Record that a function we've visited has no profile data.
+  void addMissing(bool MainFile) {
+    if (MainFile)
+      ++MissingInMainFile;
+    ++Missing;
+  }
+  /// Record that a function we've visited has mismatched profile data.
+  void addMismatched(bool MainFile) { ++Mismatched; }
+  /// Whether or not the stats we've gathered indicate any potential problems.
+  bool hasDiagnostics() { return Missing || Mismatched; }
+  /// Report potential problems we've found to \c Diags.
+  void reportDiagnostics(DiagnosticsEngine &Diags, StringRef MainFile);
 };
 
 /// This class organizes the cross-function state that is used while generating
@@ -726,8 +750,8 @@ public:
   /// \brief Gets or a creats a Microsoft TypeDescriptor.
   llvm::Constant *getMSTypeDescriptor(QualType Ty);
   /// \brief Gets or a creats a Microsoft CompleteObjectLocator.
-  llvm::GlobalVariable *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
-                                                   const VPtrInfo *Info);
+  llvm::Constant *getMSCompleteObjectLocator(const CXXRecordDecl *RD,
+                                             const VPtrInfo *Info);
 
   /// Gets the address of a block which requires no captures.
   llvm::Constant *GetAddrOfGlobalBlock(const BlockExpr *BE, const char *);
@@ -1000,6 +1024,9 @@ public:
   }
 
   const SanitizerOptions &getSanOpts() const { return SanOpts; }
+
+  void reportGlobalToASan(llvm::GlobalVariable *GV, SourceLocation Loc,
+                          bool IsDynInit = false);
 
   void addDeferredVTable(const CXXRecordDecl *RD) {
     DeferredVTables.push_back(RD);

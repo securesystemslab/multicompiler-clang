@@ -4085,8 +4085,7 @@ static void AddKeywordsToConsumer(Sema &SemaRef,
 /// \brief Check whether the declarations found for a typo correction are
 /// visible, and if none of them are, convert the correction to an 'import
 /// a module' correction.
-static void checkCorrectionVisibility(Sema &SemaRef, TypoCorrection &TC,
-                                      DeclarationName TypoName) {
+static void checkCorrectionVisibility(Sema &SemaRef, TypoCorrection &TC) {
   if (TC.begin() == TC.end())
     return;
 
@@ -4385,7 +4384,7 @@ TypoCorrection Sema::CorrectTypo(const DeclarationNameInfo &TypoName,
 
     TypoCorrection TC = Result;
     TC.setCorrectionRange(SS, TypoName);
-    checkCorrectionVisibility(*this, TC, TypoName.getName());
+    checkCorrectionVisibility(*this, TC);
     return TC;
   }
   // Ugly hack equivalent to CTC == CTC_ObjCMessageReceiver;
@@ -4455,14 +4454,27 @@ bool CorrectionCandidateCallback::ValidateCandidate(const TypoCorrection &candid
     return WantTypeSpecifiers || WantExpressionKeywords || WantCXXNamedCasts ||
            WantRemainingKeywords || WantObjCSuper;
 
-  for (TypoCorrection::const_decl_iterator CDecl = candidate.begin(),
-                                           CDeclEnd = candidate.end();
-       CDecl != CDeclEnd; ++CDecl) {
-    if (!isa<TypeDecl>(*CDecl))
-      return true;
+  bool HasNonType = false;
+  bool HasStaticMethod = false;
+  bool HasNonStaticMethod = false;
+  for (Decl *D : candidate) {
+    if (FunctionTemplateDecl *FTD = dyn_cast<FunctionTemplateDecl>(D))
+      D = FTD->getTemplatedDecl();
+    if (CXXMethodDecl *Method = dyn_cast<CXXMethodDecl>(D)) {
+      if (Method->isStatic())
+        HasStaticMethod = true;
+      else
+        HasNonStaticMethod = true;
+    }
+    if (!isa<TypeDecl>(D))
+      HasNonType = true;
   }
 
-  return WantTypeSpecifiers;
+  if (IsAddressOfOperand && HasNonStaticMethod && !HasStaticMethod &&
+      !candidate.getCorrectionSpecifier())
+    return false;
+
+  return WantTypeSpecifiers || HasNonType;
 }
 
 FunctionCallFilterCCC::FunctionCallFilterCCC(Sema &SemaRef, unsigned NumArgs,

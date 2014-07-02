@@ -435,7 +435,8 @@ class CastExpressionIdValidator : public CorrectionCandidateCallback {
 
     if (isa<TypeDecl>(ND))
       return WantTypeSpecifiers;
-    return AllowNonTypes;
+    return AllowNonTypes &&
+           CorrectionCandidateCallback::ValidateCandidate(candidate);
   }
 
  private:
@@ -813,6 +814,7 @@ ExprResult Parser::ParseCastExpression(bool isUnaryExpression,
     SourceLocation TemplateKWLoc;
     CastExpressionIdValidator Validator(isTypeCast != NotTypeCast,
                                         isTypeCast != IsTypeCast);
+    Validator.IsAddressOfOperand = isAddressOfOperand;
     Name.setIdentifier(&II, ILoc);
     Res = Actions.ActOnIdExpression(getCurScope(), ScopeSpec, TemplateKWLoc,
                                     Name, Tok.is(tok::l_paren),
@@ -2181,7 +2183,7 @@ ExprResult Parser::ParseStringLiteralExpression(bool AllowUserDefinedLiteral) {
   } while (isTokenStringLiteral());
 
   // Pass the set of string tokens, ready for concatenation, to the actions.
-  return Actions.ActOnStringLiteral(&StringToks[0], StringToks.size(),
+  return Actions.ActOnStringLiteral(StringToks,
                                     AllowUserDefinedLiteral ? getCurScope()
                                                             : nullptr);
 }

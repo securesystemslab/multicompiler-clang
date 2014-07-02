@@ -328,13 +328,11 @@ static bool checkDiagnosticGroupMappings(DiagnosticsEngine &StoredDiags,
   return false;
 }
 
-static DiagnosticsEngine::ExtensionHandling
-isExtHandlingFromDiagsError(DiagnosticsEngine &Diags) {
-  DiagnosticsEngine::ExtensionHandling Ext =
-      Diags.getExtensionHandlingBehavior();
-  if (Ext == DiagnosticsEngine::Ext_Warn && Diags.getWarningsAsErrors())
-    Ext = DiagnosticsEngine::Ext_Error;
-  return Ext;
+static bool isExtHandlingFromDiagsError(DiagnosticsEngine &Diags) {
+  diag::Severity Ext = Diags.getExtensionHandlingBehavior();
+  if (Ext == diag::Severity::Warning && Diags.getWarningsAsErrors())
+    return true;
+  return Ext >= diag::Severity::Error;
 }
 
 static bool checkDiagnosticMappings(DiagnosticsEngine &StoredDiags,
@@ -807,7 +805,7 @@ IdentifierInfo *ASTIdentifierLookupTrait::ReadData(const internal_key_type& k,
         I -= *SI;
 
         uint32_t LocalMacroID = *I;
-        llvm::ArrayRef<uint32_t> Overrides;
+        ArrayRef<uint32_t> Overrides;
         if (*SI != 1)
           Overrides = llvm::makeArrayRef(&I[2], *SI - 2);
         Reader.addPendingMacroFromModule(II, &F, LocalMacroID, Overrides);
@@ -1559,7 +1557,7 @@ HeaderFileInfoTrait::ReadData(internal_key_ref key, const unsigned char *d,
 void
 ASTReader::addPendingMacroFromModule(IdentifierInfo *II, ModuleFile *M,
                                      GlobalMacroID GMacID,
-                                     llvm::ArrayRef<SubmoduleID> Overrides) {
+                                     ArrayRef<SubmoduleID> Overrides) {
   assert(NumCurrentElementsDeserializing > 0 &&"Missing deserialization guard");
   SubmoduleID *OverrideData = nullptr;
   if (!Overrides.empty()) {
@@ -1728,9 +1726,9 @@ struct ASTReader::ModuleMacroInfo {
 
   SubmoduleID getSubmoduleID() const { return SubModID; }
 
-  llvm::ArrayRef<SubmoduleID> getOverriddenSubmodules() const {
+  ArrayRef<SubmoduleID> getOverriddenSubmodules() const {
     if (!Overrides)
-      return llvm::ArrayRef<SubmoduleID>();
+      return None;
     return llvm::makeArrayRef(Overrides + 1, *Overrides);
   }
 
@@ -1880,7 +1878,7 @@ static bool areDefinedInSystemModules(MacroInfo *PrevMI, MacroInfo *NewMI,
 
 void ASTReader::removeOverriddenMacros(IdentifierInfo *II,
                                        AmbiguousMacros &Ambig,
-                                       llvm::ArrayRef<SubmoduleID> Overrides) {
+                                       ArrayRef<SubmoduleID> Overrides) {
   for (unsigned OI = 0, ON = Overrides.size(); OI != ON; ++OI) {
     SubmoduleID OwnerID = Overrides[OI];
 
@@ -1905,7 +1903,7 @@ void ASTReader::removeOverriddenMacros(IdentifierInfo *II,
 
 ASTReader::AmbiguousMacros *
 ASTReader::removeOverriddenMacros(IdentifierInfo *II,
-                                  llvm::ArrayRef<SubmoduleID> Overrides) {
+                                  ArrayRef<SubmoduleID> Overrides) {
   MacroDirective *Prev = PP.getMacroDirective(II);
   if (!Prev && Overrides.empty())
     return nullptr;
@@ -3464,8 +3462,13 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
   case OutOfDate:
   case VersionMismatch:
   case ConfigurationMismatch:
-  case HadErrors:
+  case HadErrors: {
+    llvm::SmallPtrSet<ModuleFile *, 4> LoadedSet;
+    for (const ImportedModule &IM : Loaded)
+      LoadedSet.insert(IM.Mod);
+
     ModuleMgr.removeModules(ModuleMgr.begin() + NumModules, ModuleMgr.end(),
+                            LoadedSet,
                             Context.getLangOpts().Modules
                               ? &PP.getHeaderSearchInfo().getModuleMap()
                               : nullptr);
@@ -3475,7 +3478,7 @@ ASTReader::ASTReadResult ASTReader::ReadAST(const std::string &FileName,
     GlobalIndex.reset();
     ModuleMgr.setGlobalIndex(nullptr);
     return ReadResult;
-
+  }
   case Success:
     break;
   }

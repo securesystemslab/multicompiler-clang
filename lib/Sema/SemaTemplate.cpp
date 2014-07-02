@@ -2119,8 +2119,7 @@ QualType Sema::CheckTemplateIdType(TemplateName Name,
     // corresponds to these arguments.
     void *InsertPos = nullptr;
     ClassTemplateSpecializationDecl *Decl
-      = ClassTemplate->findSpecialization(Converted.data(), Converted.size(),
-                                          InsertPos);
+      = ClassTemplate->findSpecialization(Converted, InsertPos);
     if (!Decl) {
       // This is the first time we have referenced this class template
       // specialization. Create the canonical declaration and add it to
@@ -2500,11 +2499,9 @@ DeclResult Sema::ActOnVarTemplateSpecialization(
 
   if (IsPartialSpecialization)
     // FIXME: Template parameter list matters too
-    PrevDecl = VarTemplate->findPartialSpecialization(
-        Converted.data(), Converted.size(), InsertPos);
+    PrevDecl = VarTemplate->findPartialSpecialization(Converted, InsertPos);
   else
-    PrevDecl = VarTemplate->findSpecialization(Converted.data(),
-                                               Converted.size(), InsertPos);
+    PrevDecl = VarTemplate->findSpecialization(Converted, InsertPos);
 
   VarTemplateSpecializationDecl *Specialization = nullptr;
 
@@ -2669,7 +2666,7 @@ Sema::CheckVarTemplateId(VarTemplateDecl *Template, SourceLocation TemplateLoc,
   // corresponds to these arguments.
   void *InsertPos = nullptr;
   if (VarTemplateSpecializationDecl *Spec = Template->findSpecialization(
-          Converted.data(), Converted.size(), InsertPos))
+          Converted, InsertPos))
     // If we already have a variable template specialization, return it.
     return Spec;
 
@@ -4193,7 +4190,7 @@ isNullPointerValueTemplateArgument(Sema &S, NonTypeTemplateParmDecl *Param,
   if (Arg->isValueDependent() || Arg->isTypeDependent())
     return NPV_NotNullPointer;
   
-  if (!S.getLangOpts().CPlusPlus11)
+  if (!S.getLangOpts().CPlusPlus11 || S.getLangOpts().MSVCCompat)
     return NPV_NotNullPointer;
   
   // Determine whether we have a constant expression.
@@ -4340,22 +4337,6 @@ CheckTemplateArgumentAddressOfObjectOrFunction(Sema &S,
   Expr *Arg = ArgIn;
   QualType ArgType = Arg->getType();
 
-  // If our parameter has pointer type, check for a null template value.
-  if (ParamType->isPointerType() || ParamType->isNullPtrType()) {
-    switch (isNullPointerValueTemplateArgument(S, Param, ParamType, Arg)) {
-    case NPV_NullPointer:
-      S.Diag(Arg->getExprLoc(), diag::warn_cxx98_compat_template_arg_null);
-      Converted = TemplateArgument(ParamType, /*isNullPtr*/true);
-      return false;
-
-    case NPV_Error:
-      return true;
-        
-    case NPV_NotNullPointer:
-      break;
-    }
-  }
-
   bool AddressTaken = false;
   SourceLocation AddrOpLoc;
   if (S.getLangOpts().MicrosoftExt) {
@@ -4443,6 +4424,32 @@ CheckTemplateArgumentAddressOfObjectOrFunction(Sema &S,
       Arg = subst->getReplacement()->IgnoreImpCasts();
   }
 
+  DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Arg);
+  ValueDecl *Entity = DRE ? DRE->getDecl() : nullptr;
+
+  // If our parameter has pointer type, check for a null template value.
+  if (ParamType->isPointerType() || ParamType->isNullPtrType()) {
+    NullPointerValueKind NPV;
+    // dllimport'd entities aren't constant but are available inside of template
+    // arguments.
+    if (Entity && Entity->hasAttr<DLLImportAttr>())
+      NPV = NPV_NotNullPointer;
+    else
+      NPV = isNullPointerValueTemplateArgument(S, Param, ParamType, ArgIn);
+    switch (NPV) {
+    case NPV_NullPointer:
+      S.Diag(Arg->getExprLoc(), diag::warn_cxx98_compat_template_arg_null);
+      Converted = TemplateArgument(ParamType, /*isNullPtr=*/true);
+      return false;
+
+    case NPV_Error:
+      return true;
+
+    case NPV_NotNullPointer:
+      break;
+    }
+  }
+
   // Stop checking the precise nature of the argument if it is value dependent,
   // it should be checked when instantiated.
   if (Arg->isValueDependent()) {
@@ -4459,15 +4466,12 @@ CheckTemplateArgumentAddressOfObjectOrFunction(Sema &S,
     return false;
   }
 
-  DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(Arg);
   if (!DRE) {
     S.Diag(Arg->getLocStart(), diag::err_template_arg_not_decl_ref)
     << Arg->getSourceRange();
     S.Diag(Param->getLocation(), diag::note_template_param_here);
     return true;
   }
-
-  ValueDecl *Entity = DRE->getDecl();
 
   // Cannot refer to non-static data members
   if (isa<FieldDecl>(Entity) || isa<IndirectFieldDecl>(Entity)) {
@@ -6080,14 +6084,9 @@ Sema::ActOnClassTemplateSpecialization(Scope *S, unsigned TagSpec,
 
   if (isPartialSpecialization)
     // FIXME: Template parameter list matters, too
-    PrevDecl
-      = ClassTemplate->findPartialSpecialization(Converted.data(),
-                                                 Converted.size(),
-                                                 InsertPos);
+    PrevDecl = ClassTemplate->findPartialSpecialization(Converted, InsertPos);
   else
-    PrevDecl
-      = ClassTemplate->findSpecialization(Converted.data(),
-                                          Converted.size(), InsertPos);
+    PrevDecl = ClassTemplate->findSpecialization(Converted, InsertPos);
 
   ClassTemplateSpecializationDecl *Specialization = nullptr;
 
@@ -7097,8 +7096,7 @@ Sema::ActOnExplicitInstantiation(Scope *S,
   // corresponds to these arguments.
   void *InsertPos = nullptr;
   ClassTemplateSpecializationDecl *PrevDecl
-    = ClassTemplate->findSpecialization(Converted.data(),
-                                        Converted.size(), InsertPos);
+    = ClassTemplate->findSpecialization(Converted, InsertPos);
 
   TemplateSpecializationKind PrevDecl_TSK
     = PrevDecl ? PrevDecl->getTemplateSpecializationKind() : TSK_Undeclared;

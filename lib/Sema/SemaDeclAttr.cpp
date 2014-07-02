@@ -3029,16 +3029,11 @@ static void handleOptimizeNoneAttr(Sema &S, Decl *D,
 static void handleGlobalAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   FunctionDecl *FD = cast<FunctionDecl>(D);
   if (!FD->getReturnType()->isVoidType()) {
-    TypeLoc TL = FD->getTypeSourceInfo()->getTypeLoc().IgnoreParens();
-    if (FunctionTypeLoc FTL = TL.getAs<FunctionTypeLoc>()) {
-      S.Diag(FD->getTypeSpecStartLoc(), diag::err_kern_type_not_void_return)
+    SourceRange RTRange = FD->getReturnTypeSourceRange();
+    S.Diag(FD->getTypeSpecStartLoc(), diag::err_kern_type_not_void_return)
         << FD->getType()
-        << FixItHint::CreateReplacement(FTL.getReturnLoc().getSourceRange(),
-                                        "void");
-    } else {
-      S.Diag(FD->getTypeSpecStartLoc(), diag::err_kern_type_not_void_return)
-        << FD->getType();
-    }
+        << (RTRange.isValid() ? FixItHint::CreateReplacement(RTRange, "void")
+                              : FixItHint());
     return;
   }
 
@@ -3844,13 +3839,6 @@ DLLImportAttr *Sema::mergeDLLImportAttr(Decl *D, SourceRange Range,
   return ::new (Context) DLLImportAttr(Range, Context, AttrSpellingListIndex);
 }
 
-static void handleDLLImportAttr(Sema &S, Decl *D, const AttributeList &Attr) {
-  unsigned Index = Attr.getAttributeSpellingListIndex();
-  DLLImportAttr *NewAttr = S.mergeDLLImportAttr(D, Attr.getRange(), Index);
-  if (NewAttr)
-    D->addAttr(NewAttr);
-}
-
 DLLExportAttr *Sema::mergeDLLExportAttr(Decl *D, SourceRange Range,
                                         unsigned AttrSpellingListIndex) {
   if (DLLImportAttr *Import = D->getAttr<DLLImportAttr>()) {
@@ -3864,9 +3852,18 @@ DLLExportAttr *Sema::mergeDLLExportAttr(Decl *D, SourceRange Range,
   return ::new (Context) DLLExportAttr(Range, Context, AttrSpellingListIndex);
 }
 
-static void handleDLLExportAttr(Sema &S, Decl *D, const AttributeList &Attr) {
-  unsigned Index = Attr.getAttributeSpellingListIndex();
-  DLLExportAttr *NewAttr = S.mergeDLLExportAttr(D, Attr.getRange(), Index);
+static void handleDLLAttr(Sema &S, Decl *D, const AttributeList &A) {
+  if (isa<ClassTemplatePartialSpecializationDecl>(D) &&
+      S.Context.getTargetInfo().getCXXABI().isMicrosoft()) {
+    S.Diag(A.getRange().getBegin(), diag::warn_attribute_ignored)
+        << A.getName();
+    return;
+  }
+
+  unsigned Index = A.getAttributeSpellingListIndex();
+  Attr *NewAttr = A.getKind() == AttributeList::AT_DLLExport
+                      ? (Attr *)S.mergeDLLExportAttr(D, A.getRange(), Index)
+                      : (Attr *)S.mergeDLLImportAttr(D, A.getRange(), Index);
   if (NewAttr)
     D->addAttr(NewAttr);
 }
@@ -4070,10 +4067,8 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     handleX86ForceAlignArgPointerAttr(S, D, Attr);
     break;
   case AttributeList::AT_DLLExport:
-    handleDLLExportAttr(S, D, Attr);
-    break;
   case AttributeList::AT_DLLImport:
-    handleDLLImportAttr(S, D, Attr);
+    handleDLLAttr(S, D, Attr);
     break;
   case AttributeList::AT_Mips16:
     handleSimpleAttribute<Mips16Attr>(S, D, Attr);

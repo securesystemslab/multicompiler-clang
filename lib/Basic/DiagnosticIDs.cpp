@@ -353,11 +353,6 @@ bool DiagnosticIDs::isDefaultMappingAsError(unsigned DiagID) {
   return GetDefaultDiagMapping(DiagID).getSeverity() == diag::Severity::Error;
 }
 
-bool DiagnosticIDs::isRemark(unsigned DiagID) {
-  return DiagID < diag::DIAG_UPPER_LIMIT &&
-         getBuiltinDiagClass(DiagID) == CLASS_REMARK;
-}
-
 /// getDescription - Given a diagnostic ID, return a description of the
 /// issue.
 StringRef DiagnosticIDs::getDescription(unsigned DiagID) const {
@@ -445,23 +440,8 @@ DiagnosticIDs::getDiagnosticSeverity(unsigned DiagID, SourceLocation Loc,
 
   // For extension diagnostics that haven't been explicitly mapped, check if we
   // should upgrade the diagnostic.
-  if (IsExtensionDiag && !Mapping.isUser()) {
-    switch (Diag.ExtBehavior) {
-    case DiagnosticsEngine::Ext_Ignore:
-      break; 
-    case DiagnosticsEngine::Ext_Warn:
-      // Upgrade ignored diagnostics to warnings.
-      if (Result == diag::Severity::Ignored)
-        Result = diag::Severity::Warning;
-      break;
-    case DiagnosticsEngine::Ext_Error:
-      // Upgrade ignored or warning diagnostics to errors.
-      if (Result == diag::Severity::Ignored ||
-          Result == diag::Severity::Warning)
-        Result = diag::Severity::Error;
-      break;
-    }
-  }
+  if (IsExtensionDiag && !Mapping.isUser())
+    Result = std::max(Result, Diag.ExtBehavior);
 
   // At this point, ignored errors can no longer be upgraded.
   if (Result == diag::Severity::Ignored)

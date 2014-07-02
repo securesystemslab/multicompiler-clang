@@ -47,7 +47,7 @@ static int Execute(llvm::Module *Mod, char * const *envp) {
 
   std::string Error;
   std::unique_ptr<llvm::ExecutionEngine> EE(
-      llvm::ExecutionEngine::createJIT(Mod, &Error));
+      llvm::ExecutionEngine::create(Mod, /*ForceInterpreter*/ false, &Error));
   if (!EE) {
     llvm::errs() << "unable to make execution engine: " << Error << "\n";
     return 255;

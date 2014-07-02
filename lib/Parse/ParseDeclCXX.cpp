@@ -689,22 +689,32 @@ Decl *Parser::ParseStaticAssertDeclaration(SourceLocation &DeclEnd){
     return nullptr;
   }
 
-  if (ExpectAndConsume(tok::comma)) {
-    SkipUntil(tok::semi);
-    return nullptr;
-  }
+  ExprResult AssertMessage;
+  if (Tok.is(tok::r_paren)) {
+    Diag(Tok, getLangOpts().CPlusPlus1z
+                  ? diag::warn_cxx1y_compat_static_assert_no_message
+                  : diag::ext_static_assert_no_message)
+      << (getLangOpts().CPlusPlus1z
+              ? FixItHint()
+              : FixItHint::CreateInsertion(Tok.getLocation(), ", \"\""));
+  } else {
+    if (ExpectAndConsume(tok::comma)) {
+      SkipUntil(tok::semi);
+      return nullptr;
+    }
 
-  if (!isTokenStringLiteral()) {
-    Diag(Tok, diag::err_expected_string_literal)
-      << /*Source='static_assert'*/1;
-    SkipMalformedDecl();
-    return nullptr;
-  }
+    if (!isTokenStringLiteral()) {
+      Diag(Tok, diag::err_expected_string_literal)
+        << /*Source='static_assert'*/1;
+      SkipMalformedDecl();
+      return nullptr;
+    }
 
-  ExprResult AssertMessage(ParseStringLiteralExpression());
-  if (AssertMessage.isInvalid()) {
-    SkipMalformedDecl();
-    return nullptr;
+    AssertMessage = ParseStringLiteralExpression();
+    if (AssertMessage.isInvalid()) {
+      SkipMalformedDecl();
+      return nullptr;
+    }
   }
 
   T.consumeClose();
@@ -3390,12 +3400,22 @@ void Parser::ParseCXX11Attributes(ParsedAttributesWithRange &attrs,
 }
 
 void Parser::DiagnoseAndSkipCXX11Attributes() {
-  if (!isCXX11AttributeSpecifier())
-    return;
-
   // Start and end location of an attribute or an attribute list.
   SourceLocation StartLoc = Tok.getLocation();
+  SourceLocation EndLoc = SkipCXX11Attributes();
+
+  if (EndLoc.isValid()) {
+    SourceRange Range(StartLoc, EndLoc);
+    Diag(StartLoc, diag::err_attributes_not_allowed)
+      << Range;
+  }
+}
+
+SourceLocation Parser::SkipCXX11Attributes() {
   SourceLocation EndLoc;
+
+  if (!isCXX11AttributeSpecifier())
+    return EndLoc;
 
   do {
     if (Tok.is(tok::l_square)) {
@@ -3413,11 +3433,7 @@ void Parser::DiagnoseAndSkipCXX11Attributes() {
     }
   } while (isCXX11AttributeSpecifier());
 
-  if (EndLoc.isValid()) {
-    SourceRange Range(StartLoc, EndLoc);
-    Diag(StartLoc, diag::err_attributes_not_allowed)
-      << Range;
-  }
+  return EndLoc;
 }
 
 /// ParseMicrosoftAttributes - Parse a Microsoft attribute [Attr]
