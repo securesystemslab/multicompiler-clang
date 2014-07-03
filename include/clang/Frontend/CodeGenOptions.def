@@ -154,8 +154,6 @@ ENUM_CODEGENOPT(DefaultTLSModel, TLSModel, 2, GeneralDynamicTLSModel)
 CODEGENOPT(SanitizeRecover, 1, 1) ///< Attempt to recover from sanitizer checks
                                   ///< by continuing execution when possible
 
-CODEGENOPT(NOPInsertion, 1, 0) ///< Randomly add NOPs
-
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT
 #undef VALUE_CODEGENOPT

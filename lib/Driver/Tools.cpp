@@ -3488,13 +3488,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back(Args.MakeArgString("-rng-seed=" + seed));
   }
 
-  if (Args.hasArg(options::OPT_fdiversify)) {
-    CmdArgs.push_back("-nop-insertion");
-
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-sched-randomize");
-  }
-
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
                                options::OPT_mno_restrict_it)) {
     if (A->getOption().matches(options::OPT_mrestrict_it)) {
