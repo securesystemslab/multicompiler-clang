@@ -3490,9 +3490,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (Args.hasArg(options::OPT_fdiversify)) {
     CmdArgs.push_back("-nop-insertion");
-
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-sched-randomize");
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
