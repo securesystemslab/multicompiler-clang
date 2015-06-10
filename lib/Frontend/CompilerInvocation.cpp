@@ -487,6 +487,7 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       getLastArgIntValue(Args, OPT_stack_protector_buffer_size, 8, Diags);
   Opts.StackRealignment = Args.hasArg(OPT_mstackrealign);
   Opts.NOPInsertion = Args.hasArg(OPT_nop_insertion);
+  Opts.ShuffleFunctions = Args.hasArg(OPT_shuffle_functions);
 
   if (Arg *A = Args.getLastArg(OPT_mstack_alignment)) {
     StringRef Val = A->getValue();

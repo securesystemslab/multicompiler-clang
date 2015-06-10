@@ -187,6 +187,8 @@ def no_struct_path_tbaa : Flag<["-"], "no-struct-path-tbaa">,
   HelpText<"Turn off struct-path aware Type Based Alias Analysis">;
 def nop_insertion : Flag<["-"], "nop-insertion">,
   HelpText<"Randomly insert NOPs">;
+def shuffle_functions : Flag<["-"], "shuffle-functions">,
+  HelpText<"Randomly shuffle functions">;
 def masm_verbose : Flag<["-"], "masm-verbose">,
   HelpText<"Generate verbose assembly output">;
 def mcode_model : Separate<["-"], "mcode-model">,
