@@ -258,6 +258,10 @@ public:
     return "__TEXT,__StaticInit,regular,pure_instructions";
   }
 
+  const char *getVTableSectionSpecifier() const override {
+    return "__DATA,__vtable";
+  }
+
   /// Darwin does not support protected visibility.  Darwin's "default"
   /// is very similar to ELF's "protected";  Darwin requires a "weak"
   /// attribute on declarations that can be dynamically replaced.
@@ -438,6 +442,10 @@ public:
 
   const char *getStaticInitSectionSpecifier() const override {
     return ".text.startup";
+  }
+
+  const char *getVTableSectionSpecifier() const override {
+    return ".rodata.vtable";
   }
 };
 
@@ -3656,7 +3664,7 @@ public:
     LongDoubleWidth = 96;
     LongDoubleAlign = 32;
     SuitableAlign = 128;
-    DataLayoutString = "e-m:e-p:32:32-f64:32:64-f80:32-n8:16:32-S128";
+    DataLayoutString = "e-m:e-p:32:32-f64:32:64-f80:32-n8:16:32-S128-t64";
     SizeType = UnsignedInt;
     PtrDiffType = SignedInt;
     IntPtrType = SignedInt;
@@ -3753,7 +3761,7 @@ public:
       UseSignedCharForObjCBool = false;
     SizeType = UnsignedLong;
     IntPtrType = SignedLong;
-    DataLayoutString = "e-m:o-p:32:32-f64:32:64-f80:128-n8:16:32-S128";
+    DataLayoutString = "e-m:o-p:32:32-f64:32:64-f80:128-n8:16:32-S128-t64";
     HasAlignMac68kSupport = true;
   }
 
@@ -3779,8 +3787,8 @@ public:
     bool IsWinCOFF =
         getTriple().isOSWindows() && getTriple().isOSBinFormatCOFF();
     DataLayoutString = IsWinCOFF
-                           ? "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32"
-                           : "e-m:e-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32";
+                           ? "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32-t64"
+                           : "e-m:e-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32-t64";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
@@ -3859,7 +3867,7 @@ public:
       : X86_32TargetInfo(Triple) {
     WCharType = UnsignedShort;
     DoubleAlign = LongLongAlign = 64;
-    DataLayoutString = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32";
+    DataLayoutString = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32-t64";
   }
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override {
@@ -3987,10 +3995,10 @@ public:
     RegParmMax = 6;
 
     // Pointers are 32-bit in x32.
-    DataLayoutString = IsX32 ? "e-m:e-p:32:32-i64:64-f80:128-n8:16:32:64-S128"
+    DataLayoutString = IsX32 ? "e-m:e-p:32:32-i64:64-f80:128-n8:16:32:64-S128-t64"
                              : IsWinCOFF
-                                   ? "e-m:w-i64:64-f80:128-n8:16:32:64-S128"
-                                   : "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
+                                   ? "e-m:w-i64:64-f80:128-n8:16:32:64-S128-t64"
+                                   : "e-m:e-i64:64-f80:128-n8:16:32:64-S128-t64";
 
     // Use fpret only for long double.
     RealTypeUsesObjCFPRet = (1 << TargetInfo::LongDouble);
@@ -4164,7 +4172,7 @@ public:
     llvm::Triple T = llvm::Triple(Triple);
     if (T.isiOS())
       UseSignedCharForObjCBool = false;
-    DataLayoutString = "e-m:o-i64:64-f80:128-n8:16:32:64-S128";
+    DataLayoutString = "e-m:o-i64:64-f80:128-n8:16:32:64-S128-t64";
   }
 
   bool handleTargetFeatures(std::vector<std::string> &Features,

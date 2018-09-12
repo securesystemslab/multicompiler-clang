@@ -378,6 +378,9 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   if (D.hasAttr<UsedAttr>())
     CGM.addUsedGlobal(var);
 
+  if (CGM.isInSanitizerBlacklist(var, D.getLocation(), D.getType()))
+    var->setNoCrossCheck(true);
+
   // We may have to cast the constant because of the initializer
   // mismatch above.
   //

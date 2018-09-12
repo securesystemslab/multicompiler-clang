@@ -206,10 +206,6 @@ def relaxed_aliasing : Flag<["-"], "relaxed-aliasing">,
   HelpText<"Turn off Type Based Alias Analysis">;
 def no_struct_path_tbaa : Flag<["-"], "no-struct-path-tbaa">,
   HelpText<"Turn off struct-path aware Type Based Alias Analysis">;
-def nop_insertion : Flag<["-"], "nop-insertion">,
-  HelpText<"Randomly insert NOPs">;
-def shuffle_functions : Flag<["-"], "shuffle-functions">,
-  HelpText<"Randomly shuffle functions">;
 def masm_verbose : Flag<["-"], "masm-verbose">,
   HelpText<"Generate verbose assembly output">;
 def mcode_model : Separate<["-"], "mcode-model">,
@@ -229,6 +225,10 @@ def menable_unsafe_fp_math : Flag<["-"], "menable-unsafe-fp-math">,
            "precision">;
 def mfloat_abi : Separate<["-"], "mfloat-abi">,
   HelpText<"The float ABI to use">;
+def mjump_tables_ro_data : Flag<["-"], "mjump-tables-rodata">,
+  HelpText<"Emit jump tables in a read-only data section, instead of inline in code.">;
+def mjump_tables_exec : Flag<["-"], "mjump-tables-exec">,
+  HelpText<"Emit jump tables as branch instructions.">;
 def mlimit_float_precision : Separate<["-"], "mlimit-float-precision">,
   HelpText<"Limit float precision to the given value">;
 def split_stacks : Flag<["-"], "split-stacks">,
@@ -270,6 +270,64 @@ def fsanitize_coverage_trace_cmp
 def fsanitize_coverage_8bit_counters
     : Flag<["-"], "fsanitize-coverage-8bit-counters">,
       HelpText<"Enable frequency counters in sanitizer coverage">;
+def mark_vtables: Flag<["-"], "mark-vtables">,
+  HelpText<"Mark all vtables and uses for runtime randomization">;
+def split_vtables: Flag<["-"], "split-vtables">,
+  HelpText<"Split all vtables into data and executable sections">;
+def booby_trap_vtables: Flag<["-"], "boobytrap-vtables">,
+  HelpText<"Booby trap all vtables with dummy entries">;
+def min_num_vtable_entries: Joined<["-"], "min-number-vtable-entries=">,
+  HelpText<"Minimum number of vtable entries after booby trapping">;
+def min_percent_vtable_booby_traps: Joined<["-"], "min-percent-vtable-boobytraps=">,
+  HelpText<"Minimum percentage (0-100) of vtable entries which are booby traps">;
+
+//===----------------------------------------------------------------------===//
+// MultiCompiler Specific Options
+//===----------------------------------------------------------------------===//
+
+def align_functions : Joined<["-"], "align-functions=">,
+  HelpText<"Align functions to 2^n-byte boundaries">;
+def shuffle_stack_frames : Flag<["-"], "shuffle-stack-frames">,
+  HelpText<"Shuffle local variables in functions">;
+def max_stack_pad : Joined<["-"], "max-stack-pad-size=">,
+  HelpText<"Maximum size of stack frame pad">;
+def pre_ra_rand_range: Joined<["-"], "pre-RA-randomizer-range=">,
+  HelpText<"pre-RA randomizer probability range">;
+def nop_insertion : Flag<["-"], "nop-insertion">,
+  HelpText<"Randomly insert NOPs">;
+def nop_insertion_percentage : Joined<["-"], "nop-insertion-percentage=">,
+  HelpText<"Percentage of instructions to have NOPs prepended">;
+def max_nops_per_instruction : Joined<["-"], "max-nops-per-instruction=">,
+  HelpText<"Maximum number of NOPs that can be prepended to an instruction">;
+def early_nop_threshold : Joined<["-"], "early-nop-threshold=">,
+  HelpText<"Threshold of inserted NOPs for NOP insertion early-mode">;
+def early_nop_max_count : Joined<["-"], "early-nop-max-count=">,
+  HelpText<"Maximum number of NOPs per instruction in NOP early-mode">;
+def mov_to_lea_percentage : Joined<["-"], "mov-to-lea-percentage=">,
+  HelpText<"Percentage of register-to-register MOVs to be converted to LEA">;
+def equiv_subst_percentage : Joined<["-"], "equiv-subst-percentage=">,
+  HelpText<"Percentage of instructions to be converted to equivalents">;
+def rngseedfile :  Separate<["-"], "rng-state-file">,
+  HelpText<"State file for the random number seed generator">;
+def random_function_list : Flag<["-"], "randomize-function-list">,
+  HelpText<"Internally permute the function list before optimization">;
+def randomize_machine_registers : Flag<["-"], "randomize-machine-registers">,
+  HelpText<"Internally randomize the order of machine registers in the allocator">;
+def isched_rand_percentage : Joined<["-"], "isched-rand-percentage=">,
+  HelpText<"Percentage of instructions to be scheduled differently">;
+def use_function_options : Flag<["-"], "use-function-options">,
+  HelpText<"Enables per-function options">;
+def function_options_file : Joined<["-"], "function-options-file=">,
+  HelpText<"File that contains function options">;
+
+def pointer_protection : Flag<["-"], "pointer-protection">,
+  HelpText<"Enable pointer protection (indirect all readable code pointers)">;
+def pointer_protection_hmac : Flag<["-"], "pointer-protection-hmac">,
+  HelpText<"Enable pointer protection (indirect all readable code pointers)">;
+def call_pointer_protection : Flag<["-"], "call-pointer-protection">,
+  HelpText<"Enable call pointer protection (indirect all return addresses)">;
+def cookie_protection : Flag<["-"], "cookie-protection">,
+  HelpText<"Authenticate all direct calls">;
 
 //===----------------------------------------------------------------------===//
 // Dependency Output Options

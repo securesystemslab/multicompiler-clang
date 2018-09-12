@@ -20,6 +20,7 @@
 #include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/IR/Trampoline.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Transforms/Utils/Cloning.h"
@@ -526,7 +527,7 @@ void CodeGenVTables::EmitThunks(GlobalDecl GD)
 llvm::Constant *CodeGenVTables::CreateVTableInitializer(
     const CXXRecordDecl *RD, const VTableComponent *Components,
     unsigned NumComponents, const VTableLayout::VTableThunkTy *VTableThunks,
-    unsigned NumVTableThunks, llvm::Constant *RTTI) {
+    unsigned NumVTableThunks, llvm::Constant *RTTI, llvm::GlobalVariable *XVTable) {
   SmallVector<llvm::Constant *, 64> Inits;
 
   llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
@@ -536,7 +537,8 @@ llvm::Constant *CodeGenVTables::CreateVTableInitializer(
 
   unsigned NextVTableThunkIndex = 0;
 
-  llvm::Constant *PureVirtualFn = nullptr, *DeletedVirtualFn = nullptr;
+  llvm::Constant *PureVirtualFn = nullptr, *DeletedVirtualFn = nullptr,
+    *BoobyTrapVirtualFn = nullptr;
 
   for (unsigned I = 0; I != NumComponents; ++I) {
     VTableComponent Component = Components[I];
@@ -646,6 +648,25 @@ llvm::Constant *CodeGenVTables::CreateVTableInitializer(
     case VTableComponent::CK_UnusedFunctionPointer:
       Init = llvm::ConstantExpr::getNullValue(Int8PtrTy);
       break;
+
+    case VTableComponent::CK_XVTable:
+      assert(XVTable && "XVTable must be passed to CreateVTableInitializer when using split vtables!");
+      Init = CGM.getCXXABI().getAddrOfXVTableIndex(XVTable, Component.getXVTable());
+      Init = llvm::ConstantExpr::getBitCast(Init, Int8PtrTy);
+      break;
+
+    case VTableComponent::CK_BoobyTrap: {
+      if (!BoobyTrapVirtualFn) {
+        llvm::FunctionType *Ty =
+          llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+        StringRef BoobyTrapCallName = CGM.getCXXABI().GetBoobyTrapVirtualCallName();
+        BoobyTrapVirtualFn = CGM.CreateRuntimeFunction(Ty, BoobyTrapCallName);
+        BoobyTrapVirtualFn = llvm::ConstantExpr::getBitCast(BoobyTrapVirtualFn,
+                                                            CGM.Int8PtrTy);
+      }
+      Init = BoobyTrapVirtualFn;
+      break;
+    }
     };
     
     Inits.push_back(Init);
@@ -653,6 +674,151 @@ llvm::Constant *CodeGenVTables::CreateVTableInitializer(
   
   llvm::ArrayType *ArrayType = llvm::ArrayType::get(Int8PtrTy, NumComponents);
   return llvm::ConstantArray::get(ArrayType, Inits);
+}
+
+llvm::Constant *CodeGenVTables::CreateXVTableInitializer(
+    const CXXRecordDecl *RD, const VTableComponent *Components,
+    unsigned NumComponents, const VTableLayout::VTableThunkTy *VTableThunks,
+    unsigned NumVTableThunks) {
+  SmallVector<llvm::Constant *, 64> Inits;
+
+  llvm::Type *Int8PtrTy = CGM.Int8PtrTy;
+
+  unsigned NextVTableThunkIndex = 0;
+
+  llvm::Constant *PureVirtualFn = nullptr, *DeletedVirtualFn = nullptr,
+    *BoobyTrapVirtualFn = nullptr;
+
+  for (unsigned I = 0; I != NumComponents; ++I) {
+    VTableComponent Component = Components[I];
+
+    llvm::Constant *Init = nullptr;
+
+    switch (Component.getKind()) {
+    default:
+      assert("XVTables can only contain methods pointers");
+      break;
+    case VTableComponent::CK_FunctionPointer:
+    case VTableComponent::CK_CompleteDtorPointer:
+    case VTableComponent::CK_DeletingDtorPointer: {
+      GlobalDecl GD;
+
+      // Get the right global decl.
+      switch (Component.getKind()) {
+      default:
+        llvm_unreachable("Unexpected vtable component kind");
+      case VTableComponent::CK_FunctionPointer:
+        GD = Component.getFunctionDecl();
+        break;
+      case VTableComponent::CK_CompleteDtorPointer:
+        GD = GlobalDecl(Component.getDestructorDecl(), Dtor_Complete);
+        break;
+      case VTableComponent::CK_DeletingDtorPointer:
+        GD = GlobalDecl(Component.getDestructorDecl(), Dtor_Deleting);
+        break;
+      }
+
+      if (cast<CXXMethodDecl>(GD.getDecl())->isPure()) {
+        // We have a pure virtual member function.
+        if (!PureVirtualFn) {
+          llvm::FunctionType *Ty =
+            llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+          StringRef PureCallName = CGM.getCXXABI().GetPureVirtualCallName();
+          PureVirtualFn = CGM.CreateRuntimeFunction(Ty, PureCallName);
+        }
+        Init = llvm::Trampoline::Create(PureVirtualFn);
+      } else if (cast<CXXMethodDecl>(GD.getDecl())->isDeleted()) {
+        if (!DeletedVirtualFn) {
+          llvm::FunctionType *Ty =
+            llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+          StringRef DeletedCallName =
+            CGM.getCXXABI().GetDeletedVirtualCallName();
+          DeletedVirtualFn = CGM.CreateRuntimeFunction(Ty, DeletedCallName);
+        }
+        Init = llvm::Trampoline::Create(DeletedVirtualFn);
+      } else {
+        // Check if we should use a thunk.
+        if (NextVTableThunkIndex < NumVTableThunks &&
+            VTableThunks[NextVTableThunkIndex].first == I) {
+          const ThunkInfo &Thunk = VTableThunks[NextVTableThunkIndex].second;
+
+          maybeEmitThunkForVTable(GD, Thunk);
+          Init = CGM.GetAddrOfThunk(GD, Thunk);
+
+          NextVTableThunkIndex++;
+        } else {
+          llvm::Type *Ty = CGM.getTypes().GetFunctionTypeForVTable(GD);
+
+          Init = CGM.GetAddrOfFunction(GD, Ty, /*ForVTable=*/true);
+        }
+
+        Init = llvm::Trampoline::Create(Init);
+      }
+      break;
+    }
+
+    case VTableComponent::CK_UnusedFunctionPointer:
+      Init = llvm::ConstantExpr::getNullValue(Int8PtrTy);
+      Init = llvm::Trampoline::Create(Init);
+      break;
+
+
+    case VTableComponent::CK_BoobyTrap: {
+      if (!BoobyTrapVirtualFn) {
+        llvm::FunctionType *Ty =
+          llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+        StringRef BoobyTrapCallName = CGM.getCXXABI().GetBoobyTrapVirtualCallName();
+        BoobyTrapVirtualFn = CGM.CreateRuntimeFunction(Ty, BoobyTrapCallName);
+      }
+      Init = llvm::Trampoline::Create(BoobyTrapVirtualFn);
+      break;
+    }
+    };
+
+    Inits.push_back(Init);
+  }
+
+  llvm::ArrayType *ArrayType = 
+      llvm::ArrayType::get(CGM.getTypes().GetTrampolineType()->getPointerTo(), NumComponents);
+  return llvm::ConstantArray::get(ArrayType, Inits);
+}
+
+void CodeGenVTables::CreateVTableTrapMD(const CXXRecordDecl *RD,
+                                        llvm::GlobalVariable *VTable,
+                                        const VTableLayout &VTLayout) {
+  const VTableComponent *Components = VTLayout.vtable_component_begin();
+  auto &AddressPointsByIndex = VTLayout.getAddressPointsByIndex();
+  for (unsigned I = 0, E = VTLayout.getNumVTableComponents();
+       I != E; ++I) {
+    VTableComponent Component = Components[I];
+    if (Component.getKind() == VTableComponent::CK_XVTable) {
+      uint64_t NumXVTableComponents;
+      const VTableComponent *NextComponent = nullptr;
+      for (unsigned J = I+1; J != E; ++J) {
+        if (Components[J].getKind() == VTableComponent::CK_XVTable) {
+          NextComponent = &Components[J];
+          break;
+        }
+      }
+      if (NextComponent) {
+        NumXVTableComponents = NextComponent->getXVTable() - Component.getXVTable();
+      } else {
+        NumXVTableComponents = VTLayout.getNumXVTableComponents() - Component.getXVTable();
+      }
+
+      SmallVector<llvm::Constant*, 3> Bases;
+      for (auto AP = AddressPointsByIndex.lower_bound(I),
+             AE = AddressPointsByIndex.upper_bound(I); AP != AE; ++AP) {
+        llvm::Constant *BaseName = llvm::ConstantExpr::getBitCast(
+          CGM.getCXXABI().GetAddrOfClassName(AP->second.getBase()),
+          CGM.Int8PtrTy);
+
+        Bases.push_back(BaseName);
+      }
+
+      CGM.AddVTableTrapInfo(VTable, I, NumXVTableComponents, Bases);
+    }
+  }
 }
 
 llvm::GlobalVariable *
@@ -701,14 +867,49 @@ CodeGenVTables::GenerateConstructionVTable(const CXXRecordDecl *RD,
   llvm::Constant *RTTI = CGM.GetAddrOfRTTIDescriptor(
       CGM.getContext().getTagDeclType(Base.getBase()));
 
+  llvm::GlobalVariable *XVTable = nullptr;
+  bool ShouldSplitVTables = CGM.getLangOpts().SplitVTables;
+  if (ShouldSplitVTables) {
+    SmallString<256> OutName;
+    llvm::raw_svector_ostream Out(OutName);
+    cast<ItaniumMangleContext>(CGM.getCXXABI().getMangleContext())
+        .mangleCXXCtorXVTable(RD, Base.getBaseOffset().getQuantity(),
+                              Base.getBase(), Out);
+    StringRef Name = OutName.str();
+
+    XVTable = CGM.getCXXABI().getAddrOfXVTable(Name, VTLayout->getNumXVTableComponents());
+
+    // Set the correct linkage.
+    XVTable->setLinkage(Linkage);
+
+    CGM.setGlobalVisibility(XVTable, RD);
+
+    if (VTable->isWeakForLinker() && CGM.supportsCOMDAT()) {
+      llvm::Comdat *C = CGM.getModule().getOrInsertComdat(VTable->getName());
+      XVTable->setComdat(C);
+      VTable->setComdat(C);
+    }
+  }
+
   // Create and set the initializer.
   llvm::Constant *Init = CreateVTableInitializer(
       Base.getBase(), VTLayout->vtable_component_begin(),
       VTLayout->getNumVTableComponents(), VTLayout->vtable_thunk_begin(),
-      VTLayout->getNumVTableThunks(), RTTI);
+      VTLayout->getNumVTableThunks(), RTTI, XVTable);
   VTable->setInitializer(Init);
   
+  // FIXME : NYO : Should check this is necessary here.
   CGM.EmitVTableBitSetEntries(VTable, *VTLayout.get());
+
+  // ... and the XVTable initializer
+  if (ShouldSplitVTables) {
+    CreateVTableTrapMD(Base.getBase(), VTable, *VTLayout);
+    llvm::Constant *XInit = CreateXVTableInitializer(
+      Base.getBase(), VTLayout->xvtable_component_begin(),
+      VTLayout->getNumXVTableComponents(), VTLayout->vtable_thunk_begin(),
+      VTLayout->getNumVTableThunks());
+    XVTable->setInitializer(XInit);
+  }
 
   return VTable;
 }

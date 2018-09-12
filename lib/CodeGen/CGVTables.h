@@ -64,7 +64,15 @@ public:
   llvm::Constant *CreateVTableInitializer(
       const CXXRecordDecl *RD, const VTableComponent *Components,
       unsigned NumComponents, const VTableLayout::VTableThunkTy *VTableThunks,
-      unsigned NumVTableThunks, llvm::Constant *RTTI);
+      unsigned NumVTableThunks, llvm::Constant *RTTI, llvm::GlobalVariable *XVTable);
+
+  llvm::Constant *CreateXVTableInitializer(
+      const CXXRecordDecl *RD, const VTableComponent *Components,
+      unsigned NumComponents, const VTableLayout::VTableThunkTy *VTableThunks,
+      unsigned NumVTableThunks);
+
+  void CreateVTableTrapMD(const CXXRecordDecl *RD, llvm::GlobalVariable *VTable,
+                          const VTableLayout &VTLayout);
 
   CodeGenVTables(CodeGenModule &CGM);
 
@@ -96,6 +104,8 @@ public:
     
   /// GetAddrOfVTT - Get the address of the VTT for the given record decl.
   llvm::GlobalVariable *GetAddrOfVTT(const CXXRecordDecl *RD);
+
+  llvm::GlobalVariable *GetAddrOfClassName(const CXXRecordDecl *RD);
 
   /// EmitVTTDefinition - Emit the definition of the given vtable.
   void EmitVTTDefinition(llvm::GlobalVariable *VTT,

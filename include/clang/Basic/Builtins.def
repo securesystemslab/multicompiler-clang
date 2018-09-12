@@ -1252,6 +1252,8 @@ BUILTIN(__builtin___get_unsafe_stack_ptr, "v*", "Fn")
 BUILTIN(__builtin_nontemporal_store, "v.", "t")
 BUILTIN(__builtin_nontemporal_load, "v.", "t")
 
+BUILTIN(__builtin_load_ptr_unsafe, "v*v*C", "n")
+
 #undef BUILTIN
 #undef LIBBUILTIN
 #undef LANGBUILTIN

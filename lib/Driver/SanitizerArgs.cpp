@@ -194,6 +194,7 @@ void SanitizerArgs::clear() {
   AsanSharedRuntime = false;
   LinkCXXRuntimes = false;
   CfiCrossDso = false;
+  CrossCheckDebug = false;
 }
 
 SanitizerArgs::SanitizerArgs(const ToolChain &TC,
@@ -446,6 +447,11 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     // Without PIE, external function address may resolve to a PLT record, which
     // can not be verified by the target module.
     NeedPIE |= CfiCrossDso;
+  }
+
+  if (AllAddedKinds & CrossCheck) {
+    CrossCheckDebug = Args.hasFlag(options::OPT_fsanitize_debug_crosscheck,
+                                   options::OPT_fno_sanitize_debug_crosscheck, false);
   }
 
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the

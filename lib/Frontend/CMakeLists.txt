@@ -1,6 +1,7 @@
 add_subdirectory(Rewrite)
 
 set(LLVM_LINK_COMPONENTS
+  MultiCompiler
   BitReader
   Option
   Support

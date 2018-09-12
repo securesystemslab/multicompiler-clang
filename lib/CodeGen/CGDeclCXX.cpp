@@ -277,6 +277,8 @@ llvm::Function *CodeGenModule::CreateGlobalInitOrDestructFunction(
       Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
     if (getLangOpts().Sanitize.has(SanitizerKind::SafeStack))
       Fn->addFnAttr(llvm::Attribute::SafeStack);
+    if (getLangOpts().Sanitize.has(SanitizerKind::CrossCheck))
+      Fn->addFnAttr(llvm::Attribute::CrossCheck);
   }
 
   return Fn;

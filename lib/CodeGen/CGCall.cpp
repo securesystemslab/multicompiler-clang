@@ -1431,6 +1431,10 @@ static void AddAttributesFromFunctionProtoType(ASTContext &Ctx,
     FuncAttrs.addAttribute(llvm::Attribute::NoUnwind);
 }
 
+llvm::Type *CodeGenTypes::GetTrampolineType() {
+  return llvm::Type::getTrampolineTy(getLLVMContext());
+}
+
 void CodeGenModule::ConstructAttributeList(
     StringRef Name, const CGFunctionInfo &FI, CGCalleeInfo CalleeInfo,
     AttributeListType &PAL, unsigned &CallingConv, bool AttrOnCallSite) {
@@ -3569,6 +3573,13 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   llvm::Instruction *CI = CS.getInstruction();
   if (Builder.isNamePreserving() && !CI->getType()->isVoidTy())
     CI->setName("call");
+
+  llvm::Instruction *CalleeInst;
+  if (CGM.getCodeGenOpts().MarkVTables &&
+      (CalleeInst = dyn_cast<llvm::Instruction>(Callee->stripPointerCasts()))) {
+    CI->setTrapInfo(CalleeInst->getTrapInfo());
+    CalleeInst->setTrapInfo(llvm::TrapInfo());
+  }
 
   // Emit any writebacks immediately.  Arguably this should happen
   // after any return-value munging.

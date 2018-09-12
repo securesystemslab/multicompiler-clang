@@ -877,6 +877,11 @@ public:
     return nullptr;
   }
 
+  /// \brief Return the section to use for vtables.
+  virtual const char *getVTableSectionSpecifier() const {
+    return nullptr;
+  }
+
   const LangAS::Map &getAddressSpaceMap() const {
     return *AddrSpaceMap;
   }

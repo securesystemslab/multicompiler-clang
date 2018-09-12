@@ -387,6 +387,7 @@ void CodeGenModule::Release() {
   EmitCtorList(GlobalCtors, "llvm.global_ctors");
   EmitCtorList(GlobalDtors, "llvm.global_dtors");
   EmitGlobalAnnotations();
+  EmitTrapInfos();
   EmitStaticExternCAliases();
   EmitDeferredUnusedCoverageMappings();
   if (CoverageMapping)
@@ -1373,8 +1374,10 @@ bool CodeGenModule::isInSanitizerBlacklist(llvm::GlobalVariable *GV,
                                            SourceLocation Loc, QualType Ty,
                                            StringRef Category) const {
   // For now globals can be blacklisted only in ASan and KASan.
+  // And cross check sanitizer.
   if (!LangOpts.Sanitize.hasOneOf(
-          SanitizerKind::Address | SanitizerKind::KernelAddress))
+          SanitizerKind::Address | SanitizerKind::KernelAddress |
+          SanitizerKind::CrossCheck))
     return false;
   const auto &SanitizerBL = getContext().getSanitizerBlacklist();
   if (SanitizerBL.isBlacklistedGlobal(GV->getName(), Category))
@@ -2431,6 +2434,9 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D) {
 
   maybeSetTrivialComdat(*D, *GV);
 
+  if (isInSanitizerBlacklist(GV, D->getLocation(), D->getType()))
+    GV->setNoCrossCheck(true);
+
   // Emit the initializer function if necessary.
   if (NeedsGlobalCtor || NeedsGlobalDtor)
     EmitCXXGlobalVarDeclInitFunc(D, GV, NeedsGlobalCtor);
@@ -3176,7 +3182,9 @@ GenerateStringLiteral(llvm::Constant *C, llvm::GlobalValue::LinkageTypes LT,
     AddrSpace = CGM.getContext().getTargetAddressSpace(LangAS::opencl_constant);
 
   llvm::Module &M = CGM.getModule();
-  // Create a global variable for this string
+  // Create a global variable for this string. To support CFAR checkpoint/restore
+  // functionality, variables shouldn't have private linkage since these don't get symbols.
+  assert(LT != llvm::GlobalValue::LinkageTypes::PrivateLinkage && "Linkage is never private");
   auto *GV = new llvm::GlobalVariable(
       M, C->getType(), !CGM.getLangOpts().WritableStrings, LT, C, GlobalName,
       nullptr, llvm::GlobalVariable::NotThreadLocal, AddrSpace);
@@ -3224,7 +3232,9 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S,
     LT = llvm::GlobalValue::LinkOnceODRLinkage;
     GlobalVariableName = MangledNameBuffer;
   } else {
-    LT = llvm::GlobalValue::PrivateLinkage;
+    // To support CFAR checkpoint/restore functionality we give the string internal
+    // linkage (rather than private) to give it a symbol.
+    LT = llvm::GlobalValue::InternalLinkage;
     GlobalVariableName = Name;
   }
 
@@ -3273,8 +3283,9 @@ ConstantAddress CodeGenModule::GetAddrOfConstantCString(
   // Get the default prefix if a name wasn't specified.
   if (!GlobalName)
     GlobalName = ".str";
-  // Create a global variable for this.
-  auto GV = GenerateStringLiteral(C, llvm::GlobalValue::PrivateLinkage, *this,
+  // Create a global variable for this. To support CFAR checkpoint/restore functionality
+  // we give the string internal linkage (rather than private) to give it a symbol.
+  auto GV = GenerateStringLiteral(C, llvm::GlobalValue::InternalLinkage, *this,
                                   GlobalName, Alignment);
   if (Entry)
     *Entry = GV;
@@ -4005,5 +4016,46 @@ void CodeGenModule::getFunctionFeatureMap(llvm::StringMap<bool> &FeatureMap,
   } else {
     Target.initFeatureMap(FeatureMap, getDiags(), TargetCPU,
                           Target.getTargetOpts().Features);
+  }
+}
+
+void CodeGenModule::AddVTableTrapInfo(llvm::GlobalVariable *VTable, uint64_t Index,
+                                      uint64_t NumMethods, ArrayRef<llvm::Constant*> BaseNames) {
+  llvm::Value *Indices[] = {
+    llvm::ConstantInt::get(Int64Ty, 0),
+    llvm::ConstantInt::get(Int64Ty, Index)
+  };
+  llvm::Constant *VTLocation =
+    llvm::ConstantExpr::getInBoundsGetElementPtr(VTable->getValueType(), VTable, Indices);
+
+  llvm::ArrayType *BaseNamesType = llvm::ArrayType::get(
+    Int8PtrTy, BaseNames.size());
+
+  llvm::Constant *BaseNamesValue = llvm::ConstantArray::get(BaseNamesType, BaseNames);
+  auto *Bases = new llvm::GlobalVariable(getModule(), BaseNamesType, false,
+                                         llvm::GlobalValue::InternalLinkage,
+                                         BaseNamesValue, "llvm.trap.vtablebases");
+  Bases->setSection("llvm.metadata");
+
+  llvm::Constant *Zero = llvm::Constant::getNullValue(Int32Ty);
+  llvm::Constant *Zeros[] = { Zero, Zero };
+
+  llvm::Constant *Fields[3] = {
+    llvm::ConstantExpr::getBitCast(VTLocation, Int8PtrTy),
+    llvm::ConstantInt::get(Int64Ty, NumMethods),
+    llvm::ConstantExpr::getInBoundsGetElementPtr(Bases->getValueType(), Bases, Zeros)
+  };
+  TrapInfos.push_back(llvm::ConstantStruct::getAnon(Fields));
+}
+
+void CodeGenModule::EmitTrapInfos() {
+  if (!TrapInfos.empty()) {
+    // Create a new global variable for the ConstantStruct in the Module.
+    llvm::Constant *Array = llvm::ConstantArray::get(llvm::ArrayType::get(
+                                                       TrapInfos[0]->getType(), TrapInfos.size()), TrapInfos);
+    auto *gv = new llvm::GlobalVariable(getModule(), Array->getType(), false,
+                                        llvm::GlobalValue::AppendingLinkage,
+                                        Array, "llvm.trap.vtables");
+    gv->setSection("llvm.metadata");
   }
 }

@@ -241,6 +241,8 @@ public:
   getAddrOfCXXCatchHandlerType(QualType Ty, QualType CatchHandlerType) = 0;
   virtual CatchTypeInfo getCatchAllTypeInfo();
 
+  virtual llvm::GlobalVariable *GetAddrOfClassName(const CXXRecordDecl *RD) = 0;
+
   virtual bool shouldTypeidBeNullChecked(bool IsDeref,
                                          QualType SrcRecordTy) = 0;
   virtual void EmitBadTypeidCall(CodeGenFunction &CGF) = 0;
@@ -386,6 +388,15 @@ public:
   virtual llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                                 CharUnits VPtrOffset) = 0;
 
+  /// Get the address of the xvtable for the given record decl.
+  virtual llvm::GlobalVariable *getAddrOfXVTable(StringRef MangledName,
+                                                 unsigned NumComponents) = 0;
+
+  /// Get the address of the xvtable for the given record decl which should be
+  /// used for the xvtable ptr at the given index into the xvtable.
+  virtual llvm::Constant *getAddrOfXVTableIndex(llvm::GlobalVariable *Base,
+                                                uint64_t Index) = 0;
+
   /// Build a virtual function pointer in the ABI-specific way.
   virtual llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                  GlobalDecl GD,
@@ -433,6 +444,9 @@ public:
 
   /// Gets the deleted virtual member call name.
   virtual StringRef GetDeletedVirtualCallName() = 0;
+
+  /// Gets the booby trap member call function.
+  virtual StringRef GetBoobyTrapVirtualCallName() = 0;
 
   /**************************** Array cookies ******************************/
 

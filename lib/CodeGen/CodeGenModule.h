@@ -434,6 +434,9 @@ private:
   /// \brief The type used to describe the state of a fast enumeration in
   /// Objective-C's for..in loop.
   QualType ObjCFastEnumerationStateType;
+
+  /// TRAP Information.
+  std::vector<llvm::Constant*> TrapInfos;
   
   /// @}
 
@@ -1045,7 +1048,9 @@ public:
   llvm::Constant *EmitAnnotateAttr(llvm::GlobalValue *GV,
                                    const AnnotateAttr *AA,
                                    SourceLocation L);
+  void EmitTrapInfos();
 
+  
   /// Add global annotations that are set on D, for the global GV. Those
   /// annotations are emitted during finalization of the LLVM code.
   void AddGlobalAnnotations(const ValueDecl *D, llvm::GlobalValue *GV);
@@ -1063,6 +1068,9 @@ public:
   void addDeferredVTable(const CXXRecordDecl *RD) {
     DeferredVTables.push_back(RD);
   }
+
+  void AddVTableTrapInfo(llvm::GlobalVariable *VT, uint64_t Index, uint64_t NumMethods,
+                         ArrayRef<llvm::Constant*> BaseNames);
 
   /// Emit code for a singal global function or var decl. Forward declarations
   /// are emitted lazily.
@@ -1221,6 +1229,9 @@ private:
   /// Emit the llvm.gcov metadata used to tell LLVM where to emit the .gcno and
   /// .gcda files in a way that persists in .bc files.
   void EmitCoverageFile();
+
+  /// Emit metadata for diversification.
+  void EmitTrapInfo();
 
   /// Emits the initializer for a uuidof string.
   llvm::Constant *EmitUuidofInitializer(StringRef uuidstr);

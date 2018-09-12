@@ -29,6 +29,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Config/config.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -2747,6 +2748,81 @@ static void addOpenMPRuntime(ArgStringList &CmdArgs, const ToolChain &TC,
   }
 }
 
+static bool addRandoRT(const ToolChain &TC, const ArgList &Args,
+                         ArgStringList &CmdArgs) {
+  bool NeedsLibDL = false;
+
+  if ((Args.hasArg(options::OPT_fvtable_rando)) &&
+      TC.getDriver().CCCIsCXX()) {
+    CmdArgs.push_back("-whole-archive");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "vtable_rando_hook"));
+    CmdArgs.push_back("-no-whole-archive");
+
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "vtable_rando", true));
+
+    NeedsLibDL = true;
+  }
+
+  if (Args.hasArg(options::OPT_fplt_rando)) {
+    CmdArgs.push_back("-whole-archive");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "plt_rando_hook"));
+    CmdArgs.push_back("-no-whole-archive");
+
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "plt_rando", true));
+
+    NeedsLibDL = true;
+  }
+
+  if (Args.hasArg(options::OPT_fcode_pointer_protection_EQ)) {
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "code_pointer_protection"));
+  }
+
+  return NeedsLibDL;
+}
+
+static bool addDataRando(const ToolChain &TC, const ArgList &Args,
+                         ArgStringList &CmdArgs) {
+  bool NeedDataRandoRT = false;
+  if (Args.hasArg(options::OPT_fdata_rando)) {
+    CmdArgs.push_back("-plugin-opt=data-rando");
+    NeedDataRandoRT = true;
+  }
+  if (Args.hasArg(options::OPT_fcontext_sensitive_data_rando)) {
+    CmdArgs.push_back("-plugin-opt=data-rando");
+    CmdArgs.push_back("-plugin-opt=context-sensitive");
+    NeedDataRandoRT = true;
+  }
+
+  if (NeedDataRandoRT) {
+    // We can't use addSanitizerRuntime because we only want necessary symbols,
+    // not the whole archive.
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "data_rando", false));
+    return true;
+  }
+  return false;
+}
+
+static bool addCrossChecks(const ToolChain &TC, const ArgList &Args,
+                           ArgStringList &CmdArgs) {
+  bool NeedDeps = false;
+
+  if (TC.getSanitizerArgs().needsCrossCheckDebugRt()) {
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "xchecks_debug", false));
+    NeedDeps = true;
+  } else if (TC.getSanitizerArgs().needsCrossCheckRt()) {
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "xchecks", false));
+    NeedDeps = true;
+  }
+
+  if (Args.hasArg(options::OPT_fheap_checks)) {
+    CmdArgs.push_back("-plugin-opt=heap-checks");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "heap_checks", false));
+    NeedDeps = true;
+  }
+
+  return NeedDeps;
+}
+
 static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
                                 ArgStringList &CmdArgs, StringRef Sanitizer,
                                 bool IsShared) {
@@ -2781,6 +2857,23 @@ static void linkSanitizerRuntimeDeps(const ToolChain &TC,
   // There's no libdl on FreeBSD.
   if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
     CmdArgs.push_back("-ldl");
+}
+
+static void linkRandoRTDeps(const ToolChain &TC,
+                            ArgStringList &CmdArgs) {
+  if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
+    CmdArgs.push_back("-ldl");
+}
+
+static void linkDataRandoRTDeps(const ToolChain &TC, const ArgList &Args,
+                            ArgStringList &CmdArgs) {
+  TC.AddCXXStdlibLibArgs(Args, CmdArgs);
+}
+
+static void linkCrossCheckRTDeps(const ToolChain &TC, const ArgList &Args,
+                            ArgStringList &CmdArgs) {
+  CmdArgs.push_back("-lrbuff");
+  TC.AddCXXStdlibLibArgs(Args, CmdArgs);
 }
 
 static void
@@ -4732,20 +4825,6 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     break;
   }
 
-  // Translate -frandom-seed to seed the LLVM RNG
-  if (Args.hasArg(options::OPT_frandom_seed_EQ)) {
-    StringRef seed = Args.getLastArgValue(options::OPT_frandom_seed_EQ);
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back(Args.MakeArgString("-rng-seed=" + seed));
-  }
-
-  if (Args.hasArg(options::OPT_fdiversify)) {
-    CmdArgs.push_back("-nop-insertion");
-
-    CmdArgs.push_back("-backend-option");
-    CmdArgs.push_back("-sched-randomize");
-  }
-
   if (Arg *A = Args.getLastArg(options::OPT_mrestrict_it,
                                options::OPT_mno_restrict_it)) {
     if (A->getOption().matches(options::OPT_mrestrict_it)) {
@@ -4761,6 +4840,20 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     // Windows on ARM expects restricted IT blocks
     CmdArgs.push_back("-backend-option");
     CmdArgs.push_back("-arm-restrict-it");
+  }
+
+  // Translate -frandom-seed to seed the LLVM RNG
+  if (Args.hasArg(options::OPT_frandom_seed_EQ)) {
+    StringRef seed = Args.getLastArgValue(options::OPT_frandom_seed_EQ);
+    CmdArgs.push_back("-backend-option");
+    CmdArgs.push_back(Args.MakeArgString("-random-seed=" + seed));
+  }
+
+  if (Args.hasArg(options::OPT_fdiversify)) {
+    CmdArgs.push_back("-nop-insertion");
+
+    CmdArgs.push_back("-backend-option");
+    CmdArgs.push_back("-sched-randomize");
   }
 
   // Forward -f options with positive and negative forms; we translate
@@ -5473,6 +5566,28 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-load");
     CmdArgs.push_back(A->getValue());
     A->claim();
+  }
+
+  // Runtime randomization args
+  if (Args.hasArg(options::OPT_fvtable_rando)) {
+    CmdArgs.push_back("-mark-vtables");
+    CmdArgs.push_back("-split-vtables");
+    CmdArgs.push_back("-boobytrap-vtables");
+    CmdArgs.push_back("-min-number-vtable-entries=10");
+    CmdArgs.push_back("-min-percent-vtable-boobytraps=25");
+  }
+
+  Arg *PointerProtArg = Args.getLastArg(options::OPT_fcode_pointer_protection_EQ);
+  if (PointerProtArg || Args.hasArg(options::OPT_fcode_pointer_protection)) {
+    if (PointerProtArg) {
+      StringRef value = PointerProtArg->getValue();
+      if (value == "hmac")
+        CmdArgs.push_back("-pointer-protection-hmac");
+    }
+
+    CmdArgs.push_back("-pointer-protection");
+    CmdArgs.push_back("-call-pointer-protection");
+    CmdArgs.push_back("-cookie-protection");
   }
 
   // Forward -Xclang arguments to -cc1, and -mllvm arguments to the LLVM option
@@ -8910,6 +9025,13 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   // The profile runtime also needs access to system libraries.
   getToolChain().addProfileRTLibs(Args, CmdArgs);
 
+  // The rando runtime also needs access to system libraries.
+  bool NeedsRandoDeps = addRandoRT(getToolChain(), Args, CmdArgs);
+
+  bool NeedsDataRandoDeps = addDataRando(getToolChain(), Args, CmdArgs);
+
+  bool NeedsCrossCheckDeps = addCrossChecks(getToolChain(), Args, CmdArgs);
+
   if (D.CCCIsCXX() &&
       !Args.hasArg(options::OPT_nostdlib, options::OPT_nodefaultlibs)) {
     bool OnlyLibstdcxxStatic = Args.hasArg(options::OPT_static_libstdcxx) &&
@@ -8931,6 +9053,15 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
       if (NeedsSanitizerDeps)
         linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
+
+      if (NeedsRandoDeps)
+        linkRandoRTDeps(ToolChain, CmdArgs);
+
+      if (NeedsDataRandoDeps)
+        linkDataRandoRTDeps(ToolChain, Args, CmdArgs);
+
+      if (NeedsCrossCheckDeps)
+        linkCrossCheckRTDeps(ToolChain, Args, CmdArgs);
 
       bool WantPthread = Args.hasArg(options::OPT_pthread) ||
                          Args.hasArg(options::OPT_pthreads);
@@ -8976,6 +9107,21 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
 
     if (!Args.hasArg(options::OPT_nostartfiles)) {
+      if (!Args.hasArg(options::OPT_shared) &&
+          Args.hasArg(options::OPT_fvtable_rando) &&
+          D.CCCIsCXX()) {
+        CmdArgs.push_back("-whole-archive");
+        CmdArgs.push_back(ToolChain.getCompilerRTArgString(Args, "vtable_rando_start"));
+        CmdArgs.push_back("-no-whole-archive");
+      }
+
+      if (!Args.hasArg(options::OPT_shared) &&
+          Args.hasArg(options::OPT_fplt_rando)) {
+        CmdArgs.push_back("-whole-archive");
+        CmdArgs.push_back(ToolChain.getCompilerRTArgString(Args, "plt_rando_start"));
+        CmdArgs.push_back("-no-whole-archive");
+      }
+
       const char *crtend;
       if (Args.hasArg(options::OPT_shared))
         crtend = isAndroid ? "crtend_so.o" : "crtendS.o";

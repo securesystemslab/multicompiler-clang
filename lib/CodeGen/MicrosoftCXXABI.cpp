@@ -111,6 +111,7 @@ public:
 
   StringRef GetPureVirtualCallName() override { return "_purecall"; }
   StringRef GetDeletedVirtualCallName() override { return "_purecall"; }
+  StringRef GetBoobyTrapVirtualCallName() override { return "__llvm_boobytrap"; }
 
   void emitVirtualObjectDelete(CodeGenFunction &CGF, const CXXDeleteExpr *DE,
                                Address Ptr, QualType ElementType,
@@ -131,6 +132,11 @@ public:
   /// MSVC needs an extra flag to indicate a catchall.
   CatchTypeInfo getCatchAllTypeInfo() override {
     return CatchTypeInfo{nullptr, 0x40};
+  }
+
+  llvm::GlobalVariable *GetAddrOfClassName(const CXXRecordDecl *RD) override {
+    llvm_unreachable("XVTables are not yet implemented for the MicrosoftCXXABI");
+    return nullptr;
   }
 
   bool shouldTypeidBeNullChecked(bool IsDeref, QualType SrcRecordTy) override;
@@ -283,6 +289,18 @@ public:
 
   llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                         CharUnits VPtrOffset) override;
+
+  llvm::GlobalVariable *getAddrOfXVTable(StringRef MangledName,
+                                         unsigned NumComponents) override {
+    llvm_unreachable("XVTables are not yet implemented for the MicrosoftCXXABI");
+    return nullptr;
+  }
+
+  llvm::Constant *getAddrOfXVTableIndex(llvm::GlobalVariable *Base,
+                                        uint64_t Index) override {
+    assert("XVTables are not yet implemented for the MicrosoftCXXABI");
+    return nullptr;
+  }
 
   llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
                                          Address This, llvm::Type *Ty,
@@ -1576,7 +1594,7 @@ void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
     llvm::Constant *Init = CGVT.CreateVTableInitializer(
         RD, VTLayout.vtable_component_begin(),
         VTLayout.getNumVTableComponents(), VTLayout.vtable_thunk_begin(),
-        VTLayout.getNumVTableThunks(), RTTI);
+        VTLayout.getNumVTableThunks(), RTTI, nullptr);
 
     VTable->setInitializer(Init);
 

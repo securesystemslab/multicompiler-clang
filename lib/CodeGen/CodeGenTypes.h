@@ -208,6 +208,9 @@ public:
   /// and/or incomplete argument types, this will return the opaque type.
   llvm::Type *GetFunctionTypeForVTable(GlobalDecl GD);
 
+  /// GetTrampolineType - Get the type of a generic trampoline.
+  llvm::Type *GetTrampolineType();
+
   const CGRecordLayout &getCGRecordLayout(const RecordDecl*);
 
   /// UpdateCompletedType - When we find the full definition for a TagDecl,

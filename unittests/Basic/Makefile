@@ -9,7 +9,7 @@
 
 CLANG_LEVEL = ../..
 TESTNAME = Basic
-LINK_COMPONENTS := support mc
+LINK_COMPONENTS := support mc multicompiler
 USEDLIBS = clangLex.a clangBasic.a
 
 include $(CLANG_LEVEL)/unittests/Makefile

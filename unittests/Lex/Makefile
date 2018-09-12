@@ -9,7 +9,7 @@
 
 CLANG_LEVEL = ../..
 TESTNAME = Lex
-LINK_COMPONENTS := mcparser support mc bitreader
+LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader support mc mcparser multicompiler option
 USEDLIBS = clangParse.a clangSema.a clangAnalysis.a clangEdit.a \
 	clangSerialization.a clangAST.a clangLex.a clangBasic.a 
 

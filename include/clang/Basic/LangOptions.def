@@ -236,6 +236,15 @@ LANGOPT(SanitizeAddressFieldPadding, 2, 0, "controls how aggressive is ASan "
                                            "field padding (0: none, 1:least "
                                            "aggressive, 2: more aggressive)")
 
+LANGOPT(SplitVTables, 1, 0, "Controls whether to split vtables into "
+                            "data-only and execute-only sections.")
+
+LANGOPT(BoobyTrapVTables, 1, 0, "Enable booby trapping of vtables.")
+VALUE_LANGOPT(MinNumVTableEntries, 8, 16,
+              "Minimum number of vtable entries after booby trapping")
+VALUE_LANGOPT(MinPercentVTableBoobyTraps, 8, 16,
+              "Minimum percentage of vtable entries which are booby traps")
+
 #undef LANGOPT
 #undef COMPATIBLE_LANGOPT
 #undef BENIGN_LANGOPT

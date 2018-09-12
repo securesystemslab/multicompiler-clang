@@ -147,9 +147,12 @@ public:
   void mangleReferenceTemporary(const VarDecl *D, unsigned ManglingNumber,
                                 raw_ostream &) override;
   void mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &) override;
+  void mangleCXXXVTable(const CXXRecordDecl *RD, raw_ostream &) override;
   void mangleCXXVTT(const CXXRecordDecl *RD, raw_ostream &) override;
   void mangleCXXCtorVTable(const CXXRecordDecl *RD, int64_t Offset,
                            const CXXRecordDecl *Type, raw_ostream &) override;
+  void mangleCXXCtorXVTable(const CXXRecordDecl *RD, int64_t Offset,
+                            const CXXRecordDecl *Type, raw_ostream &) override;
   void mangleCXXRTTI(QualType T, raw_ostream &) override;
   void mangleCXXRTTIName(QualType T, raw_ostream &) override;
   void mangleTypeName(QualType T, raw_ostream &) override;
@@ -4201,6 +4204,14 @@ void ItaniumMangleContextImpl::mangleCXXVTable(const CXXRecordDecl *RD,
   Mangler.mangleNameOrStandardSubstitution(RD);
 }
 
+void ItaniumMangleContextImpl::mangleCXXXVTable(const CXXRecordDecl *RD,
+                                                raw_ostream &Out) {
+  // <special-name> ::= TV <type>  # virtual table
+  CXXNameMangler Mangler(*this, Out);
+  Mangler.getStream() << "_ZXV";
+  Mangler.mangleNameOrStandardSubstitution(RD);
+}
+
 void ItaniumMangleContextImpl::mangleCXXVTT(const CXXRecordDecl *RD,
                                             raw_ostream &Out) {
   // <special-name> ::= TT <type>  # VTT structure
@@ -4216,6 +4227,19 @@ void ItaniumMangleContextImpl::mangleCXXCtorVTable(const CXXRecordDecl *RD,
   // <special-name> ::= TC <type> <offset number> _ <base type>
   CXXNameMangler Mangler(*this, Out);
   Mangler.getStream() << "_ZTC";
+  Mangler.mangleNameOrStandardSubstitution(RD);
+  Mangler.getStream() << Offset;
+  Mangler.getStream() << '_';
+  Mangler.mangleNameOrStandardSubstitution(Type);
+}
+
+void ItaniumMangleContextImpl::mangleCXXCtorXVTable(const CXXRecordDecl *RD,
+                                                    int64_t Offset,
+                                                    const CXXRecordDecl *Type,
+                                                    raw_ostream &Out) {
+  // <special-name> ::= TC <type> <offset number> _ <base type>
+  CXXNameMangler Mangler(*this, Out);
+  Mangler.getStream() << "_ZXC";
   Mangler.mangleNameOrStandardSubstitution(RD);
   Mangler.getStream() << Offset;
   Mangler.getStream() << '_';

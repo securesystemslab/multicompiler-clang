@@ -17,8 +17,8 @@ SHARED_LIBRARY = 1
 
 include $(CLANG_LEVEL)/../../Makefile.config
 LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader bitwriter core \
-                   instrumentation ipo mc mcparser objcarcopts option support \
-                   object
+                   instrumentation ipo mc mcparser objcarcopts multicompiler \
+                   option support object
 USEDLIBS = clangIndex.a clangARCMigrate.a \
 	   clangRewriteFrontend.a \
 	   clangFormat.a \

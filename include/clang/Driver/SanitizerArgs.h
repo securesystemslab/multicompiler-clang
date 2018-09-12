@@ -36,6 +36,7 @@ class SanitizerArgs {
   bool AsanSharedRuntime;
   bool LinkCXXRuntimes;
   bool NeedPIE;
+  bool CrossCheckDebug;
 
  public:
   /// Parses the sanitizer arguments from an argument list.
@@ -56,6 +57,12 @@ class SanitizerArgs {
   }
   bool needsCfiRt() const;
   bool needsCfiDiagRt() const;
+  bool needsCrossCheckDebugRt() const {
+    return Sanitizers.has(SanitizerKind::CrossCheck) && CrossCheckDebug;
+  }
+  bool needsCrossCheckRt() const {
+    return Sanitizers.has(SanitizerKind::CrossCheck);
+  }
 
   bool requiresPIE() const;
   bool needsUnwindTables() const;

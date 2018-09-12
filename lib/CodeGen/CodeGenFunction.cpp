@@ -676,13 +676,26 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
   CurFnInfo = &FnInfo;
   assert(CurFn->isDeclaration() && "Function already has body?");
 
-  if (CGM.isInSanitizerBlacklist(Fn, Loc))
+  if (CGM.isInSanitizerBlacklist(Fn, Loc)) {
+    // Inlining a non-crosscheck function into a crosscheck function will result
+    // in incorrect crosscheck insertion.
+    if (SanOpts.has(SanitizerKind::CrossCheck))
+      Fn->addFnAttr(llvm::Attribute::NoInline);
+
     SanOpts.clear();
+  }
 
   if (D) {
     // Apply the no_sanitize* attributes to SanOpts.
-    for (auto Attr : D->specific_attrs<NoSanitizeAttr>())
-      SanOpts.Mask &= ~Attr->getMask();
+    for (auto Attr : D->specific_attrs<NoSanitizeAttr>()) {
+      SanitizerMask mask = Attr->getMask();
+      // Inlining a non-crosscheck function into a crosscheck function will
+      // result in incorrect crosscheck insertion.
+      if (mask == SanitizerKind::CrossCheck)
+        Fn->addFnAttr(llvm::Attribute::NoInline);
+
+      SanOpts.Mask &= ~mask;
+    }
   }
 
   // Apply sanitizer attributes to the function.
@@ -694,6 +707,9 @@ void CodeGenFunction::StartFunction(GlobalDecl GD,
     Fn->addFnAttr(llvm::Attribute::SanitizeMemory);
   if (SanOpts.has(SanitizerKind::SafeStack))
     Fn->addFnAttr(llvm::Attribute::SafeStack);
+  if (SanOpts.has(SanitizerKind::CrossCheck)) {
+    Fn->addFnAttr(llvm::Attribute::CrossCheck);
+  }
 
   // Pass inline keyword to optimizer if it appears explicitly on any
   // declaration. Also, in the case of -fno-inline attach NoInline

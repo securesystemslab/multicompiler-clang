@@ -4160,6 +4160,7 @@ SanitizerMask Linux::getSupportedSanitizers() const {
     Res |= SanitizerKind::Memory;
   if (IsX86 || IsX86_64) {
     Res |= SanitizerKind::Function;
+    Res |= SanitizerKind::CrossCheck;
   }
   return Res;
 }

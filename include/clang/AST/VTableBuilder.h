@@ -48,7 +48,13 @@ public:
     /// In some cases, a vtable function pointer will end up never being
     /// called. Such vtable function pointers are represented as a
     /// CK_UnusedFunctionPointer.
-    CK_UnusedFunctionPointer
+    CK_UnusedFunctionPointer,
+
+    /// \brief A pointer to the execute-only part of the VTable
+    CK_XVTable,
+
+    /// \brief A booby trap method
+    CK_BoobyTrap
   };
 
   VTableComponent() = default;
@@ -94,13 +100,21 @@ public:
                            reinterpret_cast<uintptr_t>(MD));
   }
 
+  static VTableComponent MakeXVtable(uint64_t Index) {
+    return VTableComponent(CK_XVTable, Index);
+  }
+
+  static VTableComponent MakeBoobyTrap() {
+    return VTableComponent(CK_BoobyTrap);
+  }
+
   static VTableComponent getFromOpaqueInteger(uint64_t I) {
     return VTableComponent(I);
   }
 
   /// \brief Get the kind of this vtable component.
   Kind getKind() const {
-    return (Kind)(Value & 0x7);
+    return ComponentKind;
   }
 
   CharUnits getVCallOffset() const {
@@ -143,6 +157,12 @@ public:
     return reinterpret_cast<CXXMethodDecl *>(getPointer());
   }
 
+  uint64_t getXVTable() const {
+    assert(getKind() == CK_XVTable && "Invalid component kind!");
+
+    return getPointer();
+  }
+
   bool isDestructorKind() const { return isDestructorKind(getKind()); }
 
   bool isUsedFunctionPointerKind() const {
@@ -172,37 +192,46 @@ private:
     return ComponentKind == CK_RTTI;
   }
 
-  VTableComponent(Kind ComponentKind, CharUnits Offset) {
+private:
+  VTableComponent(Kind ComponentKind, CharUnits Offset) : ComponentKind(ComponentKind) {
     assert((ComponentKind == CK_VCallOffset ||
             ComponentKind == CK_VBaseOffset ||
             ComponentKind == CK_OffsetToTop) && "Invalid component kind!");
     assert(Offset.getQuantity() < (1LL << 56) && "Offset is too big!");
     assert(Offset.getQuantity() >= -(1LL << 56) && "Offset is too small!");
 
-    Value = (uint64_t(Offset.getQuantity()) << 3) | ComponentKind;
+    Value = (uint64_t)Offset.getQuantity();
   }
 
-  VTableComponent(Kind ComponentKind, uintptr_t Ptr) {
-    assert((isRTTIKind(ComponentKind) || isFunctionPointerKind(ComponentKind)) &&
+  VTableComponent(Kind ComponentKind, uintptr_t Ptr) : ComponentKind(ComponentKind) {
+    assert((isRTTIKind(ComponentKind) || isFunctionPointerKind(ComponentKind) || 
+            ComponentKind == CK_XVTable ||
+            ComponentKind == CK_BoobyTrap) &&
            "Invalid component kind!");
 
-    assert((Ptr & 7) == 0 && "Pointer not sufficiently aligned!");
+    // assert((Ptr & 7) == 0 && "Pointer not sufficiently aligned!");
 
-    Value = Ptr | ComponentKind;
+    Value = Ptr;
+  }
+
+  VTableComponent(Kind ComponentKind) : ComponentKind(ComponentKind) {
+    assert((ComponentKind == CK_BoobyTrap) &&
+            "Invalid component kind!");
   }
 
   CharUnits getOffset() const {
     assert((getKind() == CK_VCallOffset || getKind() == CK_VBaseOffset ||
             getKind() == CK_OffsetToTop) && "Invalid component kind!");
 
-    return CharUnits::fromQuantity(Value >> 3);
+    return CharUnits::fromQuantity(Value);
   }
 
   uintptr_t getPointer() const {
-    assert((getKind() == CK_RTTI || isFunctionPointerKind()) &&
+    assert((getKind() == CK_RTTI || isFunctionPointerKind() ||
+            getKind() == CK_XVTable) &&
            "Invalid component kind!");
 
-    return static_cast<uintptr_t>(Value & ~7ULL);
+    return static_cast<uintptr_t>(Value);
   }
 
   explicit VTableComponent(uint64_t Value)
@@ -214,6 +243,9 @@ private:
   /// (The reason that we're not simply using a PointerIntPair here is that we
   /// need the offsets to be 64-bit, even when on a 32-bit machine).
   int64_t Value;
+
+  /// Nope that was too hacky
+  Kind ComponentKind;
 };
 
 class VTableLayout {
@@ -226,10 +258,14 @@ public:
       vtable_component_range;
 
   typedef llvm::DenseMap<BaseSubobject, uint64_t> AddressPointsMapTy;
+  typedef std::multimap<uint64_t, BaseSubobject> AddressPointsByIndexTy;
 
 private:
   uint64_t NumVTableComponents;
   std::unique_ptr<VTableComponent[]> VTableComponents;
+
+  uint64_t NumXVTableComponents;
+  std::unique_ptr<VTableComponent[]> XVTableComponents;
 
   /// \brief Contains thunks needed by vtables, sorted by indices.
   uint64_t NumVTableThunks;
@@ -238,14 +274,21 @@ private:
   /// \brief Address points for all vtables.
   AddressPointsMapTy AddressPoints;
 
+  /// \brief Reverse mapping from address point to bases (ordered in insertion
+  /// order)
+  AddressPointsByIndexTy AddressPointsByIndex;
+
   bool IsMicrosoftABI;
 
 public:
   VTableLayout(uint64_t NumVTableComponents,
                const VTableComponent *VTableComponents,
+               uint64_t NumXVTableComponents,
+               const VTableComponent *XVTableComponents,
                uint64_t NumVTableThunks,
                const VTableThunkTy *VTableThunks,
                const AddressPointsMapTy &AddressPoints,
+               const AddressPointsByIndexTy &AddressPointsByIndex,
                bool IsMicrosoftABI);
   ~VTableLayout();
 
@@ -264,6 +307,23 @@ public:
 
   vtable_component_iterator vtable_component_end() const {
     return VTableComponents.get() + NumVTableComponents;
+  }
+
+  uint64_t getNumXVTableComponents() const {
+    return NumXVTableComponents;
+  }
+
+  vtable_component_range xvtable_components() const {
+    return vtable_component_range(xvtable_component_begin(),
+                                  xvtable_component_end());
+  }
+
+  vtable_component_iterator xvtable_component_begin() const {
+    return XVTableComponents.get();
+  }
+
+  vtable_component_iterator xvtable_component_end() const {
+    return XVTableComponents.get() + NumXVTableComponents;
   }
 
   uint64_t getNumVTableThunks() const { return NumVTableThunks; }
@@ -289,6 +349,10 @@ public:
 
   const AddressPointsMapTy &getAddressPoints() const {
     return AddressPoints;
+  }
+
+  const AddressPointsByIndexTy &getAddressPointsByIndex() const {
+    return AddressPointsByIndex;
   }
 };
 
@@ -386,6 +450,10 @@ public:
   /// Base must be a virtual base class or an unambiguous base.
   CharUnits getVirtualBaseOffsetOffset(const CXXRecordDecl *RD,
                                        const CXXRecordDecl *VBase);
+
+  /// \brief Get an upper bound on how many virtual functions are in this
+  /// class's vtable (will overestimate if not splitting vtables).
+  uint64_t getMaxNumVFuncs(const CXXRecordDecl *RD);
 
   static bool classof(const VTableContextBase *VT) {
     return !VT->isMicrosoft();

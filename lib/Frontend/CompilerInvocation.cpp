@@ -29,6 +29,7 @@
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Linker/Linker.h"
+#include "llvm/MultiCompiler/MultiCompilerOptions.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptTable.h"
@@ -394,6 +395,54 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   }
   Opts.OptimizationLevel = OptimizationLevel;
 
+
+  //-- MultiCompiler Options
+  // TODO(andrei): add our options in Opts and move the actual setting to
+  // BackendUtil.cpp; this works for now, so it's low priority
+
+  // Shuffle stack frames
+  multicompiler::ShuffleStackFrames = Args.hasArg(OPT_shuffle_stack_frames);
+
+  // Maximum size of a stack frame pad
+  multicompiler::MaxStackFramePadding = getLastArgIntValue(Args, OPT_max_stack_pad, 0, Diags);
+
+  // // Location of RNG State file
+  // multicompiler::RNGStateFile = Args.getLastArgValue(OPT_rngseedfile);
+
+  // Pre-Register Ranomization Range
+  multicompiler::PreRARandomizerRange = getLastArgIntValue(Args, OPT_pre_ra_rand_range, 0, Diags);
+
+  // NOP insertion parameters
+  if (Args.hasArg(OPT_nop_insertion_percentage))
+    multicompiler::NOPInsertionPercentage = getLastArgIntValue(Args, OPT_nop_insertion_percentage, 0, Diags);
+  if (Args.hasArg(OPT_max_nops_per_instruction))
+    multicompiler::MaxNOPsPerInstruction = getLastArgIntValue(Args, OPT_max_nops_per_instruction, 1, Diags);
+  if (Args.hasArg(OPT_early_nop_threshold))
+    multicompiler::EarlyNOPThreshold = getLastArgIntValue(Args, OPT_early_nop_threshold, 0, Diags);
+  if (Args.hasArg(OPT_early_nop_max_count))
+    multicompiler::EarlyNOPMaxCount = getLastArgIntValue(Args, OPT_early_nop_max_count, 5, Diags);
+
+  // Equivalent Instruction Selection: Probability of swapping a MOV instruction with a LEA
+  multicompiler::MOVToLEAPercentage = getLastArgIntValue(Args, OPT_mov_to_lea_percentage, 0, Diags);
+
+  // Equivalent Instruction Selection: Probability of changing an instruction to an equivalent one
+  multicompiler::EquivSubstPercentage = getLastArgIntValue(Args, OPT_equiv_subst_percentage, 0, Diags);
+
+  // Internal function permutation -- per module
+  multicompiler::RandomizeFunctionList = Args.hasArg(OPT_random_function_list);
+
+  // Align functions on 2^n byte boundaries
+  multicompiler::FunctionAlignment = getLastArgIntValue(Args, OPT_align_functions, 4, Diags);
+
+  multicompiler::RandomizePhysRegs = Args.hasArg(OPT_randomize_machine_registers);
+  // // Instruction Scheduling Percentage: Probability of scheduling an instruction differently
+  // multicompiler::ISchedRandPercentage = Args.getLastArgIntValue(OPT_isched_rand_percentage, 0, Diags);
+
+  multicompiler::UseFunctionOptions = Args.hasArg(OPT_use_function_options);
+  if (Args.hasArg(OPT_function_options_file)) {
+    multicompiler::FunctionOptionsFile = Args.getLastArgValue(OPT_function_options_file);
+  }
+
   // We must always run at least the always inlining pass.
   Opts.setInlining(
     (Opts.OptimizationLevel > 1) ? CodeGenOptions::NormalInlining
@@ -495,6 +544,12 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.DisableFree = Args.hasArg(OPT_disable_free);
   Opts.DisableTailCalls = Args.hasArg(OPT_mdisable_tail_calls);
   Opts.FloatABI = Args.getLastArgValue(OPT_mfloat_abi);
+  Opts.PointerProtection = Args.hasArg(OPT_pointer_protection);
+  Opts.PointerProtectionHMAC = Args.hasArg(OPT_pointer_protection_hmac);
+  Opts.CallPointerProtection = Args.hasArg(OPT_call_pointer_protection);
+  Opts.CookieProtection = Args.hasArg(OPT_cookie_protection);
+  Opts.JumpTablesROData = Args.hasArg(OPT_mjump_tables_ro_data);
+  Opts.ExecJumpTables = Args.hasArg(OPT_mjump_tables_exec);
   if (Arg *A = Args.getLastArg(OPT_meabi)) {
     StringRef Value = A->getValue();
     llvm::EABI EABIVersion = llvm::StringSwitch<llvm::EABI>(Value)
@@ -555,6 +610,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.UniqueSectionNames = Args.hasFlag(OPT_funique_section_names,
                                          OPT_fno_unique_section_names, true);
 
+  if (Opts.JumpTablesROData && !Opts.DataSections)
+    Diags.Report(diag::err_drv_jumptablerodata_requires_datasections);
   Opts.MergeFunctions = Args.hasArg(OPT_fmerge_functions);
 
   Opts.PrepareForLTO = Args.hasArg(OPT_flto, OPT_flto_EQ);
@@ -627,7 +684,6 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
       getLastArgIntValue(Args, OPT_stack_protector_buffer_size, 8, Diags);
   Opts.StackRealignment = Args.hasArg(OPT_mstackrealign);
   Opts.NOPInsertion = Args.hasArg(OPT_nop_insertion);
-  Opts.ShuffleFunctions = Args.hasArg(OPT_shuffle_functions);
 
   if (Arg *A = Args.getLastArg(OPT_mstack_alignment)) {
     StringRef Val = A->getValue();
@@ -732,6 +788,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
     Opts.setDebugInfo(CodeGenOptions::LocTrackingOnly);
 
   Opts.RewriteMapFiles = Args.getAllArgValues(OPT_frewrite_map_file);
+
+  Opts.MarkVTables = Args.hasArg(OPT_mark_vtables);
 
   // Parse -fsanitize-recover= arguments.
   // FIXME: Report unrecoverable sanitizers incorrectly specified here.
@@ -1889,6 +1947,11 @@ static void ParseLangArgs(LangOptions &Opts, ArgList &Args, InputKind IK,
   Opts.SanitizeAddressFieldPadding =
       getLastArgIntValue(Args, OPT_fsanitize_address_field_padding, 0, Diags);
   Opts.SanitizerBlacklistFiles = Args.getAllArgValues(OPT_fsanitize_blacklist);
+
+  Opts.SplitVTables = Args.hasArg(OPT_split_vtables);
+  Opts.BoobyTrapVTables = Args.hasArg(OPT_booby_trap_vtables);
+  Opts.MinNumVTableEntries = getLastArgIntValue(Args, OPT_min_num_vtable_entries, 0, Diags);
+  Opts.MinPercentVTableBoobyTraps = getLastArgIntValue(Args, OPT_min_percent_vtable_booby_traps, 0, Diags);
 }
 
 static void ParsePreprocessorArgs(PreprocessorOptions &Opts, ArgList &Args,
@@ -2089,6 +2152,8 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &Res,
     ParseLangArgs(*Res.getLangOpts(), Args, DashX, Diags);
     if (Res.getFrontendOpts().ProgramAction == frontend::RewriteObjC)
       Res.getLangOpts()->ObjCExceptions = 1;
+    if (Res.getCodeGenOpts().CallPointerProtection && Res.getLangOpts()->Exceptions)
+      Diags.Report(diag::warn_drv_pointerprotecton_incompatible_exceptions);
   }
   // FIXME: ParsePreprocessorArgs uses the FileManager to read the contents of
   // PCH file and find the original header name. Remove the need to do that in

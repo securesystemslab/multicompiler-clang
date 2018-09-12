@@ -21,6 +21,7 @@
 #include "llvm/Bitcode/BitcodeWriterPass.h"
 #include "llvm/CodeGen/RegAllocRegistry.h"
 #include "llvm/CodeGen/SchedulerRegistry.h"
+#include "llvm/DataRando/Passes.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/FunctionInfo.h"
 #include "llvm/IR/IRPrintingPasses.h"
@@ -29,8 +30,10 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/MC/SubtargetFeature.h"
 #include "llvm/Object/FunctionIndexObjectFile.h"
+#include "llvm/MultiCompiler/MultiCompilerOptions.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PrettyStackTrace.h"
+#include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/Timer.h"
 #include "llvm/Support/raw_ostream.h"
@@ -243,6 +246,11 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
   PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFiles));
 }
 
+static void addCrossCheckSanitizerPass(const PassManagerBuilder &Builder,
+                                   legacy::PassManagerBase &PM) {
+  PM.add(createDataChecksPass());
+}
+
 static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
                                          const CodeGenOptions &CodeGenOpts) {
   TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
@@ -401,6 +409,13 @@ void EmitAssemblyHelper::CreatePasses(FunctionInfoIndex *FunctionIndex) {
                            addDataFlowSanitizerPass);
   }
 
+  if (LangOpts.Sanitize.has(SanitizerKind::CrossCheck)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_ModuleOptimizerEarly,
+                           addCrossCheckSanitizerPass);
+    PMBuilder.addExtension(PassManagerBuilder::EP_EnabledOnOptLevel0,
+                           addCrossCheckSanitizerPass);
+  }
+
   // Set up the per-function pass manager.
   legacy::FunctionPassManager *FPM = getPerFunctionPasses();
   if (CodeGenOpts.VerifyModule)
@@ -554,10 +569,14 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   Options.UnsafeFPMath = CodeGenOpts.UnsafeFPMath;
   Options.StackAlignmentOverride = CodeGenOpts.StackAlignment;
   Options.PositionIndependentExecutable = LangOpts.PIELevel != 0;
-  Options.NOPInsertion = CodeGenOpts.NOPInsertion;
-  Options.ShuffleFunctions = CodeGenOpts.ShuffleFunctions;
   Options.FunctionSections = CodeGenOpts.FunctionSections;
   Options.DataSections = CodeGenOpts.DataSections;
+  Options.MarkVTables = CodeGenOpts.MarkVTables;
+  Options.JumpTablesROData = CodeGenOpts.JumpTablesROData;
+  Options.ExecJumpTables = CodeGenOpts.ExecJumpTables;
+  Options.PointerProtection = CodeGenOpts.PointerProtection;
+  Options.PointerProtectionHMAC = CodeGenOpts.PointerProtectionHMAC;
+  Options.CallPointerProtection = CodeGenOpts.CallPointerProtection;
   Options.UniqueSectionNames = CodeGenOpts.UniqueSectionNames;
   Options.EmulatedTLS = CodeGenOpts.EmulatedTLS;
   switch (CodeGenOpts.getDebuggerTuning()) {
@@ -573,6 +592,8 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
   default:
     break;
   }
+  Options.CookieProtection = CodeGenOpts.CookieProtection;
+  Options.NOPInsertion = CodeGenOpts.NOPInsertion;
 
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
   Options.MCOptions.MCSaveTempLabels = CodeGenOpts.SaveTempLabels;
@@ -686,6 +707,14 @@ void EmitAssemblyHelper::EmitAssembly(BackendAction Action,
 
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();
+
+  // Permute the function list
+  // While we *can* change the order of passes, I'd first like to look at
+  // simply permuting the order in which functions are processed.
+  if (multicompiler::RandomizeFunctionList) {
+    std::unique_ptr<RandomNumberGenerator> RNG(TheModule->createRNG());
+    RNG->shuffle<Function>(TheModule->getFunctionList());
+  }
 
   // Run passes. For now we do all passes at once, but eventually we
   // would like to have the option of streaming code generation.

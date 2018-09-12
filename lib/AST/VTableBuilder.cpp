@@ -780,6 +780,7 @@ public:
   
   typedef llvm::DenseMap<BaseSubobject, uint64_t> 
     AddressPointsMapTy;
+  typedef std::multimap<uint64_t, BaseSubobject> AddressPointsByIndexTy;
 
   typedef llvm::DenseMap<GlobalDecl, int64_t> MethodVTableIndicesTy;
 
@@ -821,8 +822,15 @@ private:
   /// Components - The components of the vtable being built.
   SmallVector<VTableComponent, 64> Components;
 
+  /// Components - The components of the xvtable being built.
+  SmallVector<VTableComponent, 64> XComponents;
+
   /// AddressPoints - Address points for the vtable being built.
   AddressPointsMapTy AddressPoints;
+
+  /// \brief Reverse mapping from address point to bases (ordered in insertion
+  /// order)
+  AddressPointsByIndexTy AddressPointsByIndex;
 
   /// MethodInfo - Contains information about a method in a vtable.
   /// (Used for computing 'this' pointer adjustment thunks.
@@ -855,6 +863,8 @@ private:
   /// MethodInfoMap - The information for all methods in the vtable we're
   /// currently building.
   MethodInfoMapTy MethodInfoMap;
+
+  unsigned CurNumBoobyTraps;
 
   /// MethodVTableIndices - Contains the index (relative to the vtable address
   /// point) where the function pointer for a virtual function is stored.
@@ -991,7 +1001,8 @@ public:
         MostDerivedClassOffset(MostDerivedClassOffset),
         MostDerivedClassIsVirtual(MostDerivedClassIsVirtual),
         LayoutClass(LayoutClass), Context(MostDerivedClass->getASTContext()),
-        Overriders(MostDerivedClass, MostDerivedClassOffset, LayoutClass) {
+        Overriders(MostDerivedClass, MostDerivedClassOffset, LayoutClass),
+        CurNumBoobyTraps(0) {
     assert(!Context.getTargetInfo().getCXXABI().isMicrosoft());
 
     LayoutVTable();
@@ -1020,6 +1031,10 @@ public:
     return AddressPoints;
   }
 
+  const AddressPointsByIndexTy &getAddressPointsByIndex() const {
+    return AddressPointsByIndex;
+  }
+
   MethodVTableIndicesTy::const_iterator vtable_indices_begin() const {
     return MethodVTableIndices.begin();
   }
@@ -1040,6 +1055,20 @@ public:
   
   const VTableComponent *vtable_component_end() const {
     return Components.end();
+  }
+
+  /// getNumXVTableComponents - Return the number of components in the vtable
+  /// currently built.
+  uint64_t getNumXVTableComponents() const {
+    return XComponents.size();
+  }
+
+  const VTableComponent *xvtable_component_begin() const {
+    return XComponents.begin();
+  }
+
+  const VTableComponent *xvtable_component_end() const {
+    return XComponents.end();
   }
   
   AddressPointsMapTy::const_iterator address_points_begin() const {
@@ -1118,8 +1147,11 @@ void ItaniumVTableBuilder::ComputeThisAdjustments() {
 
     // Ignore adjustments for unused function pointers.
     uint64_t VTableIndex = MethodInfo.VTableIndex;
-    if (Components[VTableIndex].getKind() == 
-        VTableComponent::CK_UnusedFunctionPointer)
+    bool SplitVTables = Context.getLangOpts().SplitVTables;
+    if ((SplitVTables && XComponents[VTableIndex].getKind() ==
+         VTableComponent::CK_UnusedFunctionPointer) ||
+        (!SplitVTables && Components[VTableIndex].getKind() ==
+         VTableComponent::CK_UnusedFunctionPointer))
       continue;
     
     // Get the final overrider for this method.
@@ -1154,6 +1186,7 @@ void ItaniumVTableBuilder::ComputeThisAdjustments() {
 
   /// Clear the method info map.
   MethodInfoMap.clear();
+  CurNumBoobyTraps = 0;
   
   if (isBuildingConstructorVTable()) {
     // We don't need to store thunk information for construction vtables.
@@ -1161,18 +1194,23 @@ void ItaniumVTableBuilder::ComputeThisAdjustments() {
   }
 
   for (const auto &TI : VTableThunks) {
-    const VTableComponent &Component = Components[TI.first];
+    bool SplitVTables = Context.getLangOpts().SplitVTables;
+    const VTableComponent *Component;
+    if (SplitVTables)
+      Component = &XComponents[TI.first];
+    else
+      Component = &Components[TI.first];
     const ThunkInfo &Thunk = TI.second;
     const CXXMethodDecl *MD;
     
-    switch (Component.getKind()) {
+    switch (Component->getKind()) {
     default:
       llvm_unreachable("Unexpected vtable component kind!");
     case VTableComponent::CK_FunctionPointer:
-      MD = Component.getFunctionDecl();
+      MD = Component->getFunctionDecl();
       break;
     case VTableComponent::CK_CompleteDtorPointer:
-      MD = Component.getDestructorDecl();
+      MD = Component->getDestructorDecl();
       break;
     case VTableComponent::CK_DeletingDtorPointer:
       // We've already added the thunk when we saw the complete dtor pointer.
@@ -1305,20 +1343,35 @@ ThisAdjustment ItaniumVTableBuilder::ComputeThisAdjustment(
 
 void ItaniumVTableBuilder::AddMethod(const CXXMethodDecl *MD,
                                      ReturnAdjustment ReturnAdjustment) {
+  bool SplitVTables = Context.getLangOpts().SplitVTables;
   if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(MD)) {
     assert(ReturnAdjustment.isEmpty() && 
            "Destructor can't have return adjustment!");
 
     // Add both the complete destructor and the deleting destructor.
-    Components.push_back(VTableComponent::MakeCompleteDtor(DD));
-    Components.push_back(VTableComponent::MakeDeletingDtor(DD));
+    if (SplitVTables) {
+      XComponents.push_back(VTableComponent::MakeCompleteDtor(DD));
+      XComponents.push_back(VTableComponent::MakeDeletingDtor(DD));
+    } else {
+      Components.push_back(VTableComponent::MakeCompleteDtor(DD));
+      Components.push_back(VTableComponent::MakeDeletingDtor(DD));
+    }
   } else {
-    // Add the return adjustment if necessary.
-    if (!ReturnAdjustment.isEmpty())
-      VTableThunks[Components.size()].Return = ReturnAdjustment;
+    if (SplitVTables) {
+      // Add the return adjustment if necessary.
+      if (!ReturnAdjustment.isEmpty())
+        VTableThunks[XComponents.size()].Return = ReturnAdjustment;
 
-    // Add the function.
-    Components.push_back(VTableComponent::MakeFunction(MD));
+      // Add the function.
+      XComponents.push_back(VTableComponent::MakeFunction(MD));
+    } else {
+      // Add the return adjustment if necessary.
+      if (!ReturnAdjustment.isEmpty())
+        VTableThunks[Components.size()].Return = ReturnAdjustment;
+
+      // Add the function.
+      Components.push_back(VTableComponent::MakeFunction(MD));
+    }
   }
 }
 
@@ -1575,14 +1628,40 @@ void ItaniumVTableBuilder::AddMethods(
   if (ImplicitVirtualDtor)
     NewVirtualFunctions.push_back(ImplicitVirtualDtor);
 
+  bool SplitVTables = Context.getLangOpts().SplitVTables;
+  if (Context.getLangOpts().BoobyTrapVTables) {
+    unsigned CurMethodCount = NewVirtualFunctions.size();
+    unsigned Percent = Context.getLangOpts().MinPercentVTableBoobyTraps;
+    unsigned NumBoobyTraps = (double)CurMethodCount * Percent / (100-Percent) + 1;
+    if (CurMethodCount + NumBoobyTraps < Context.getLangOpts().MinNumVTableEntries)
+      NumBoobyTraps = Context.getLangOpts().MinNumVTableEntries - CurMethodCount;
+
+    if (NumBoobyTraps > 0) {
+      if (SplitVTables)
+        XComponents.insert(XComponents.end(), NumBoobyTraps,
+                           VTableComponent::MakeBoobyTrap());
+      else
+        Components.insert(Components.end(), NumBoobyTraps,
+                          VTableComponent::MakeBoobyTrap());
+      CurNumBoobyTraps += NumBoobyTraps;
+    }
+  }
+
   for (const CXXMethodDecl *MD : NewVirtualFunctions) {
+
     // Get the final overrider.
     FinalOverriders::OverriderInfo Overrider =
       Overriders.getOverrider(MD, Base.getBaseOffset());
 
+    uint64_t Index;
+    if (SplitVTables)
+      Index = XComponents.size();
+    else
+      Index = Components.size();
+
     // Insert the method info for this method.
     MethodInfo MethodInfo(Base.getBaseOffset(), BaseOffsetInLayoutClass,
-                          Components.size());
+                          Index);
 
     assert(!MethodInfoMap.count(MD) &&
            "Should not have method info for this method yet!");
@@ -1593,7 +1672,10 @@ void ItaniumVTableBuilder::AddMethods(
     if (!IsOverriderUsed(OverriderMD, BaseOffsetInLayoutClass,
                          FirstBaseInPrimaryBaseChain, 
                          FirstBaseOffsetInLayoutClass)) {
-      Components.push_back(VTableComponent::MakeUnusedFunction(OverriderMD));
+      if (SplitVTables)
+        XComponents.push_back(VTableComponent::MakeUnusedFunction(OverriderMD));
+      else
+        Components.push_back(VTableComponent::MakeUnusedFunction(OverriderMD));
       continue;
     }
 
@@ -1639,6 +1721,8 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
     bool BaseIsVirtualInLayoutClass, CharUnits OffsetInLayoutClass) {
   assert(Base.getBase()->isDynamicClass() && "class does not have a vtable!");
 
+  bool ShouldSplitVTables = Context.getLangOpts().SplitVTables;
+
   // Add vcall and vbase offsets for this vtable.
   VCallAndVBaseOffsetBuilder Builder(MostDerivedClass, LayoutClass, &Overriders,
                                      Base, BaseIsVirtualInLayoutClass, 
@@ -1667,6 +1751,9 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
 
   uint64_t AddressPoint = Components.size();
 
+  if (ShouldSplitVTables)
+    Components.push_back(VTableComponent::MakeXVtable(XComponents.size()));
+
   // Now go through all virtual member functions and add them.
   PrimaryBasesSetVectorTy PrimaryBases;
   AddMethods(Base, OffsetInLayoutClass,
@@ -1680,12 +1767,22 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
       const CXXMethodDecl *MD = I.first;
       const MethodInfo &MI = I.second;
       if (const CXXDestructorDecl *DD = dyn_cast<CXXDestructorDecl>(MD)) {
-        MethodVTableIndices[GlobalDecl(DD, Dtor_Complete)]
+        if (ShouldSplitVTables) {
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Complete)]
+            = MI.VTableIndex;
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Deleting)]
+            = MI.VTableIndex + 1;
+        } else {
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Complete)]
             = MI.VTableIndex - AddressPoint;
-        MethodVTableIndices[GlobalDecl(DD, Dtor_Deleting)]
+          MethodVTableIndices[GlobalDecl(DD, Dtor_Deleting)]
             = MI.VTableIndex + 1 - AddressPoint;
+        }
       } else {
-        MethodVTableIndices[MD] = MI.VTableIndex - AddressPoint;
+        if (ShouldSplitVTables)
+          MethodVTableIndices[MD] = MI.VTableIndex;
+        else
+          MethodVTableIndices[MD] = MI.VTableIndex - AddressPoint;
       }
     }
   }
@@ -1698,6 +1795,9 @@ void ItaniumVTableBuilder::LayoutPrimaryAndSecondaryVTables(
     AddressPoints.insert(std::make_pair(
       BaseSubobject(RD, OffsetInLayoutClass),
       AddressPoint));
+    AddressPointsByIndex.insert(std::make_pair(
+      AddressPoint, BaseSubobject(RD, OffsetInLayoutClass)));
+
 
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
     const CXXRecordDecl *PrimaryBase = Layout.getPrimaryBase();
@@ -2028,6 +2128,17 @@ void ItaniumVTableBuilder::dumpLayout(raw_ostream &Out) {
       Out << "[unused] " << Str;
       if (MD->isPure())
         Out << " [pure]";
+      break;
+    }
+
+    case VTableComponent::CK_XVTable: {
+      Out << "XVTable Pointer " << Component.getXVTable();
+      break;
+    }
+
+    case VTableComponent::CK_BoobyTrap: {
+      Out << "BOOBY TRAP";
+      break;
     }
 
     }
@@ -2205,18 +2316,26 @@ void ItaniumVTableBuilder::dumpLayout(raw_ostream &Out) {
 
 VTableLayout::VTableLayout(uint64_t NumVTableComponents,
                            const VTableComponent *VTableComponents,
+                           uint64_t NumXVTableComponents,
+                           const VTableComponent *XVTableComponents,
                            uint64_t NumVTableThunks,
                            const VTableThunkTy *VTableThunks,
                            const AddressPointsMapTy &AddressPoints,
+                           const AddressPointsByIndexTy &AddressPointsByIndex,
                            bool IsMicrosoftABI)
   : NumVTableComponents(NumVTableComponents),
     VTableComponents(new VTableComponent[NumVTableComponents]),
+    NumXVTableComponents(NumXVTableComponents),
+    XVTableComponents(new VTableComponent[NumXVTableComponents]),
     NumVTableThunks(NumVTableThunks),
     VTableThunks(new VTableThunkTy[NumVTableThunks]),
     AddressPoints(AddressPoints),
+    AddressPointsByIndex(AddressPointsByIndex),
     IsMicrosoftABI(IsMicrosoftABI) {
   std::copy(VTableComponents, VTableComponents+NumVTableComponents,
             this->VTableComponents.get());
+  std::copy(XVTableComponents, XVTableComponents+NumXVTableComponents,
+            this->XVTableComponents.get());
   std::copy(VTableThunks, VTableThunks+NumVTableThunks,
             this->VTableThunks.get());
   std::sort(this->VTableThunks.get(),
@@ -2250,6 +2369,14 @@ uint64_t ItaniumVTableContext::getMethodVTableIndex(GlobalDecl GD) {
   I = MethodVTableIndices.find(GD);
   assert(I != MethodVTableIndices.end() && "Did not find index!");
   return I->second;
+}
+
+uint64_t ItaniumVTableContext::getMaxNumVFuncs(const CXXRecordDecl *RD) {
+  const VTableLayout &VTLayout = getVTableLayout(RD);
+
+  // This overestimates the number of possible virtual functions when splitting
+  // is not enabled, but I'm ok with that
+  return std::max(VTLayout.getNumVTableComponents(), VTLayout.getNumXVTableComponents());
 }
 
 CharUnits
@@ -2286,9 +2413,12 @@ static VTableLayout *CreateVTableLayout(const ItaniumVTableBuilder &Builder) {
 
   return new VTableLayout(Builder.getNumVTableComponents(),
                           Builder.vtable_component_begin(),
+                          Builder.getNumXVTableComponents(),
+                          Builder.xvtable_component_begin(),
                           VTableThunks.size(),
                           VTableThunks.data(),
                           Builder.getAddressPoints(),
+                          Builder.getAddressPointsByIndex(),
                           /*IsMicrosoftABI=*/false);
 }
 
@@ -3576,6 +3706,7 @@ void MicrosoftVTableContext::computeVTableRelatedInformation(
     return;
 
   const VTableLayout::AddressPointsMapTy EmptyAddressPointsMap;
+  const VTableLayout::AddressPointsByIndexTy EmptyAddressPointsByIndex;
 
   VPtrInfoVector *VFPtrs = new VPtrInfoVector();
   computeVTablePaths(/*ForVBTables=*/false, RD, *VFPtrs);
@@ -3592,7 +3723,9 @@ void MicrosoftVTableContext::computeVTableRelatedInformation(
         Builder.vtable_thunks_begin(), Builder.vtable_thunks_end());
     VFTableLayouts[id] = new VTableLayout(
         Builder.getNumVTableComponents(), Builder.vtable_component_begin(),
-        VTableThunks.size(), VTableThunks.data(), EmptyAddressPointsMap, true);
+        0, nullptr,
+        VTableThunks.size(), VTableThunks.data(), EmptyAddressPointsMap,
+        EmptyAddressPointsByIndex, true);
     Thunks.insert(Builder.thunks_begin(), Builder.thunks_end());
 
     for (const auto &Loc : Builder.vtable_locations()) {

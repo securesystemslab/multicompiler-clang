@@ -1963,6 +1963,12 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       return RValue::get(llvm::ConstantExpr::getBitCast(GV, CGM.Int8PtrTy));
     break;
   }
+
+  case Builtin::BI__builtin_load_ptr_unsafe: {
+    Value *Ptr = EmitScalarExpr(E->getArg(0));
+    Value *F = CGM.getIntrinsic(Intrinsic::load_ptr_unsafe);
+    return RValue::get(Builder.CreateCall(F, Ptr));
+  }
   }
 
   // If this is an alias for a lib function (e.g. __builtin_sin), emit

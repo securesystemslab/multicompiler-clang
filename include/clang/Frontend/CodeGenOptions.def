@@ -69,6 +69,9 @@ CODEGENOPT(FunctionSections  , 1, 0) ///< Set when -ffunction-sections is enable
 CODEGENOPT(InstrumentFunctions , 1, 0) ///< Set when -finstrument-functions is
                                        ///< enabled.
 CODEGENOPT(InstrumentForProfiling , 1, 0) ///< Set when -pg is enabled.
+CODEGENOPT(JumpTablesROData  , 1, 0) ///< Emit jump tables in read-only data section,
+                                     ///< instead of inline
+CODEGENOPT(ExecJumpTables    , 1, 0) ///< Emit jump tables as direct branches
 CODEGENOPT(LessPreciseFPMAD  , 1, 0) ///< Enable less precise MAD instructions to
                                      ///< be generated.
 CODEGENOPT(PrepareForLTO     , 1, 0) ///< Set when -flto is enabled on the
@@ -103,6 +106,15 @@ CODEGENOPT(OmitLeafFramePointer , 1, 0) ///< Set when -momit-leaf-frame-pointer 
 VALUE_CODEGENOPT(OptimizationLevel, 2, 0) ///< The -O[0-3] option specified.
 VALUE_CODEGENOPT(OptimizeSize, 2, 0) ///< If -Os (==1) or -Oz (==2) is specified.
 
+CODEGENOPT(PointerProtection , 1, 0) ///< Indirect all code pointers through
+                                     ///< executable code. With X-only code
+                                     ///< this protects code locations.
+CODEGENOPT(PointerProtectionHMAC , 1, 0) ///< HMAC all forward code pointers in memory
+CODEGENOPT(CallPointerProtection , 1, 0) ///< Indirect all call instructions through
+                                     ///< executable code. With X-only code
+                                     ///< this protects code locations.
+CODEGENOPT(CookieProtection , 1, 0) ///< Authenticate all direct call instructions
+                                    ///< with a random cookie
 CODEGENOPT(ProfileInstrGenerate , 1, 0) ///< Instrument code to generate
                                         ///< execution counts to use with PGO.
 CODEGENOPT(CoverageMapping , 1, 0) ///< Generate coverage mapping regions to
@@ -205,6 +217,12 @@ ENUM_CODEGENOPT(VecLib, VectorLibrary, 1, NoLibrary)
 
 /// The default TLS model to use.
 ENUM_CODEGENOPT(DefaultTLSModel, TLSModel, 2, GeneralDynamicTLSModel)
+
+CODEGENOPT(MarkVTables, 1, 0) ///< Controls whether to emit a .textrap section
+                              ///< marking all vtable uses to allow vtable
+                              ///< randomization at runtime.
+
+CODEGENOPT(NOPInsertion, 1, 0) ///< Randomly add NOPs
 
 #undef CODEGENOPT
 #undef ENUM_CODEGENOPT

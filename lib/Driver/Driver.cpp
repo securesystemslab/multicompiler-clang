@@ -728,6 +728,7 @@ int Driver::ExecuteCompilation(
   for (auto &Job : C.getJobs())
     setUpResponseFiles(C, Job);
 
+  // This calls main in driver.cpp
   C.ExecuteJobs(C.getJobs(), FailingCommands);
 
   // Remove temp files.

@@ -29,6 +29,7 @@ LINK_COMPONENTS := $(TARGETS_TO_BUILD) \
 	IPO \
 	MC \
 	ObjCARCOpts \
+        MultiCompiler \
 	Option \
 	Support
 

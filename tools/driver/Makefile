@@ -32,8 +32,8 @@ TOOL_NO_EXPORTS := 1
 endif
 
 LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader bitwriter codegen \
-                   instrumentation ipo irreader linker objcarcopts option \
-                   profiledata selectiondag
+                   instrumentation ipo irreader linker multicompiler \
+                   objcarcopts option profiledata selectiondag
 USEDLIBS = clangFrontendTool.a clangFrontend.a clangDriver.a \
            clangSerialization.a clangCodeGen.a clangParse.a clangSema.a \
            clangRewriteFrontend.a clangRewrite.a

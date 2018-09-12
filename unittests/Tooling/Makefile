@@ -10,7 +10,7 @@
 CLANG_LEVEL = ../..
 TESTNAME = Tooling
 include $(CLANG_LEVEL)/../../Makefile.config
-LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader support mc option
+LINK_COMPONENTS := $(TARGETS_TO_BUILD) asmparser bitreader support mc multicompiler option
 USEDLIBS = clangTooling.a clangToolingCore.a clangFrontend.a \
 	   clangSerialization.a clangDriver.a \
            clangParse.a clangRewrite.a clangRewriteFrontend.a \

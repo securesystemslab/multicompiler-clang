@@ -31,6 +31,7 @@
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Instruction.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Value.h"
 
@@ -41,6 +42,9 @@ namespace {
 class ItaniumCXXABI : public CodeGen::CGCXXABI {
   /// VTables - All the vtables which have been defined.
   llvm::DenseMap<const CXXRecordDecl *, llvm::GlobalVariable *> VTables;
+
+  /// XVTables - All the xvtables which have been defined.
+  llvm::DenseMap<const CXXRecordDecl *, llvm::GlobalVariable *> XVTables;
 
 protected:
   bool UseARMMethodPtrABI;
@@ -185,6 +189,8 @@ public:
     return CatchTypeInfo{getAddrOfRTTIDescriptor(Ty), 0};
   }
 
+  llvm::GlobalVariable *GetAddrOfClassName(const CXXRecordDecl *RD);
+
   bool shouldTypeidBeNullChecked(bool IsDeref, QualType SrcRecordTy) override;
   void EmitBadTypeidCall(CodeGenFunction &CGF) override;
   llvm::Value *EmitTypeid(CodeGenFunction &CGF, QualType SrcRecordTy,
@@ -269,6 +275,12 @@ public:
   llvm::GlobalVariable *getAddrOfVTable(const CXXRecordDecl *RD,
                                         CharUnits VPtrOffset) override;
 
+  llvm::GlobalVariable *getAddrOfXVTable(StringRef MangledName,
+                                         unsigned NumComponents) override;
+
+  llvm::Constant *getAddrOfXVTableIndex(llvm::GlobalVariable *Base,
+                                        uint64_t Index) override;
+
   llvm::Value *getVirtualFunctionPointer(CodeGenFunction &CGF, GlobalDecl GD,
                                          Address This, llvm::Type *Ty,
                                          SourceLocation Loc) override;
@@ -306,6 +318,7 @@ public:
   StringRef GetPureVirtualCallName() override { return "__cxa_pure_virtual"; }
   StringRef GetDeletedVirtualCallName() override
     { return "__cxa_deleted_virtual"; }
+  StringRef GetBoobyTrapVirtualCallName() override { return "__llvm_boobytrap"; }
 
   CharUnits getArrayCookieSizeImpl(QualType elementType) override;
   Address InitializeArrayCookie(CodeGenFunction &CGF,
@@ -336,7 +349,6 @@ public:
                                       QualType LValType) override;
 
   bool NeedsVTTParameter(GlobalDecl GD) override;
-
   /**************************** RTTI Uniqueness ******************************/
 
 protected:
@@ -375,13 +387,24 @@ public:
     const auto &VtableLayout =
         CGM.getItaniumVTableContext().getVTableLayout(RD);
 
-    for (const auto &VtableComponent : VtableLayout.vtable_components()) {
-      if (!VtableComponent.isUsedFunctionPointerKind())
-        continue;
+    if (CGM.getLangOpts().SplitVTables) {
+      for (const auto &XVtableComponent : VtableLayout.xvtable_components()) {
+        if (!XVtableComponent.isUsedFunctionPointerKind())
+          continue;
 
-      const CXXMethodDecl *Method = VtableComponent.getFunctionDecl();
-      if (Method->getCanonicalDecl()->isInlined())
-        return true;
+        const CXXMethodDecl *Method = XVtableComponent.getFunctionDecl();
+        if (Method->getCanonicalDecl()->isInlined())
+          return true;
+      }
+    } else {
+      for (const auto &VtableComponent : VtableLayout.vtable_components()) {
+        if (!VtableComponent.isUsedFunctionPointerKind())
+          continue;
+
+        const CXXMethodDecl *Method = VtableComponent.getFunctionDecl();
+        if (Method->getCanonicalDecl()->isInlined())
+          return true;
+      }
     }
     return false;
   }
@@ -390,18 +413,32 @@ public:
     const auto &VtableLayout =
             CGM.getItaniumVTableContext().getVTableLayout(RD);
 
+    bool ShouldSplitVTables = CGM.getLangOpts().SplitVTables;
+
     for (const auto &VtableComponent : VtableLayout.vtable_components()) {
       if (VtableComponent.isRTTIKind()) {
         const CXXRecordDecl *RTTIDecl = VtableComponent.getRTTIDecl();
         if (RTTIDecl->getVisibility() == Visibility::HiddenVisibility)
           return true;
-      } else if (VtableComponent.isUsedFunctionPointerKind()) {
+      } else if (!ShouldSplitVTables && VtableComponent.isUsedFunctionPointerKind()) {
         const CXXMethodDecl *Method = VtableComponent.getFunctionDecl();
         if (Method->getVisibility() == Visibility::HiddenVisibility &&
             !Method->isDefined())
           return true;
       }
     }
+
+    if (ShouldSplitVTables) {
+      for (const auto &XVtableComponent : VtableLayout.xvtable_components()) {
+        if (XVtableComponent.isUsedFunctionPointerKind()) {
+          const CXXMethodDecl *Method = XVtableComponent.getFunctionDecl();
+          if (Method->getVisibility() == Visibility::HiddenVisibility &&
+              !Method->isDefined())
+            return true;
+        }
+      }
+    }
+
     return false;
   }
 };
@@ -582,20 +619,38 @@ llvm::Value *ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   CharUnits VTablePtrAlign =
     CGF.CGM.getDynamicOffsetAlignment(ThisAddr.getAlignment(), RD,
                                       CGF.getPointerAlign());
-  llvm::Value *VTable =
-    CGF.GetVTablePtr(Address(This, VTablePtrAlign), VTableTy, RD);
+
+  llvm::Value *VTable;
+  bool ShouldSplitVTables = CGM.getLangOpts().SplitVTables;
+  if (ShouldSplitVTables) {
+    llvm::Type *TrampolineTy = CGM.getTypes().GetTrampolineType();
+    // FIXME : NYO : Should review GetVTablePtr() definition. 
+    // What is the new arg, RD doing?
+    VTable = CGF.GetVTablePtr(Address(This, VTablePtrAlign), 
+                              TrampolineTy->getPointerTo()->getPointerTo()->getPointerTo(), 
+                              RD);
+    VTable = CGF.Builder.CreateLoad(Address(VTable, VTablePtrAlign));
+  } else {
+    VTable = CGF.GetVTablePtr(Address(This, VTablePtrAlign), VTableTy, RD);
+  }
 
   // Apply the offset.
   llvm::Value *VTableOffset = FnAsInt;
   if (!UseARMMethodPtrABI)
     VTableOffset = Builder.CreateSub(VTableOffset, ptrdiff_1);
-  VTable = Builder.CreateGEP(VTable, VTableOffset);
+  if (ShouldSplitVTables)
+    VTableOffset = Builder.CreateLShr(VTableOffset, 1);
+  llvm::Value *VFuncPtr = Builder.CreateGEP(VTable, VTableOffset);
 
   // Load the virtual function to call.
-  VTable = Builder.CreateBitCast(VTable, FTy->getPointerTo()->getPointerTo());
-  llvm::Value *VirtualFn =
-    Builder.CreateAlignedLoad(VTable, CGF.getPointerAlign(),
-                              "memptr.virtualfn");
+  llvm::Value *VirtualFn;
+  if (ShouldSplitVTables) {
+    VirtualFn = CGF.Builder.CreateBitCast(VFuncPtr, FTy->getPointerTo());
+  } else {
+    VFuncPtr = Builder.CreateBitCast(VFuncPtr, FTy->getPointerTo()->getPointerTo());
+    VirtualFn = Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign(),
+                                          "memptr.virtualfn");
+  }
   CGF.EmitBranch(FnEnd);
 
   // In the non-virtual path, the function pointer is actually a
@@ -803,8 +858,17 @@ llvm::Constant *ItaniumCXXABI::BuildMemberPointer(const CXXMethodDecl *MD,
     const ASTContext &Context = getContext();
     CharUnits PointerWidth =
       Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
-    uint64_t VTableOffset = (Index * PointerWidth.getQuantity());
 
+    uint64_t VTableOffset = Index;
+    if (CGM.getLangOpts().SplitVTables) {
+      VTableOffset <<= 1;
+    } else {
+      VTableOffset *= PointerWidth.getQuantity();
+    }
+    bool ShouldMarkVTables = CGM.getCodeGenOpts().MarkVTables;
+
+    const CXXRecordDecl *RD = MD->getParent();
+    uint64_t NumVFns = CGM.getItaniumVTableContext().getMaxNumVFuncs(RD);
     if (UseARMMethodPtrABI) {
       // ARM C++ ABI 3.2.1:
       //   This ABI specifies that adj contains twice the this
@@ -812,7 +876,12 @@ llvm::Constant *ItaniumCXXABI::BuildMemberPointer(const CXXMethodDecl *MD,
       //   least significant bit of adj then makes exactly the same
       //   discrimination as the least significant bit of ptr does for
       //   Itanium.
-      MemPtr[0] = llvm::ConstantInt::get(CGM.PtrDiffTy, VTableOffset);
+      if (ShouldMarkVTables)
+        MemPtr[0] = llvm::ConstantVTIndex::get(
+          CGM.PtrDiffTy, VTableOffset,
+          llvm::TrapInfo::getMethodPointer(GetAddrOfClassName(RD), NumVFns));
+      else
+        MemPtr[0] = llvm::ConstantInt::get(CGM.PtrDiffTy, VTableOffset);
       MemPtr[1] = llvm::ConstantInt::get(CGM.PtrDiffTy,
                                          2 * ThisAdjustment.getQuantity() + 1);
     } else {
@@ -820,7 +889,12 @@ llvm::Constant *ItaniumCXXABI::BuildMemberPointer(const CXXMethodDecl *MD,
       //   For a virtual function, [the pointer field] is 1 plus the
       //   virtual table offset (in bytes) of the function,
       //   represented as a ptrdiff_t.
-      MemPtr[0] = llvm::ConstantInt::get(CGM.PtrDiffTy, VTableOffset + 1);
+      if (ShouldMarkVTables)
+        MemPtr[0] = llvm::ConstantVTIndex::get(
+          CGM.PtrDiffTy, VTableOffset+1,
+          llvm::TrapInfo::getMethodPointer(GetAddrOfClassName(RD), NumVFns));
+      else
+        MemPtr[0] = llvm::ConstantInt::get(CGM.PtrDiffTy, VTableOffset+1);
       MemPtr[1] = llvm::ConstantInt::get(CGM.PtrDiffTy,
                                          ThisAdjustment.getQuantity());
     }
@@ -1464,10 +1538,33 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   llvm::Constant *RTTI =
       CGM.GetAddrOfRTTIDescriptor(CGM.getContext().getTagDeclType(RD));
 
+  llvm::GlobalVariable *XVTable = nullptr;
+  bool ShouldSplitVTables = CGM.getLangOpts().SplitVTables;
+  if (ShouldSplitVTables) {
+    SmallString<256> OutName;
+    llvm::raw_svector_ostream Out(OutName);
+    getMangleContext().mangleCXXXVTable(RD, Out);
+    StringRef Name = OutName.str();
+
+    XVTable = getAddrOfXVTable(Name, VTLayout.getNumXVTableComponents());
+
+    // Set the correct linkage.
+    XVTable->setLinkage(Linkage);
+
+    // Set the right visibility.
+    CGM.setGlobalVisibility(XVTable, RD);
+
+    if (VTable->isWeakForLinker() && CGM.supportsCOMDAT()) {
+      llvm::Comdat *C = CGM.getModule().getOrInsertComdat(VTable->getName());
+      XVTable->setComdat(C);
+      VTable->setComdat(C);
+    }
+  }
+  
   // Create and set the initializer.
   llvm::Constant *Init = CGVT.CreateVTableInitializer(
       RD, VTLayout.vtable_component_begin(), VTLayout.getNumVTableComponents(),
-      VTLayout.vtable_thunk_begin(), VTLayout.getNumVTableThunks(), RTTI);
+      VTLayout.vtable_thunk_begin(), VTLayout.getNumVTableThunks(), RTTI, XVTable);
   VTable->setInitializer(Init);
 
   // Set the correct linkage.
@@ -1496,7 +1593,23 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
       DC->getParent()->isTranslationUnit())
     EmitFundamentalRTTIDescriptors();
 
+  // FIXME : NYO : Should this line be here?
   CGM.EmitVTableBitSetEntries(VTable, VTLayout);
+
+  CGVT.CreateVTableTrapMD(RD, VTable, VTLayout);
+
+  if (ShouldSplitVTables) {
+    llvm::Constant *Init = CGVT.CreateXVTableInitializer(
+      RD, VTLayout.xvtable_component_begin(), VTLayout.getNumXVTableComponents(),
+      VTLayout.vtable_thunk_begin(), VTLayout.getNumVTableThunks());
+    XVTable->setInitializer(Init);
+
+    // Use pointer alignment for the vtable. Otherwise we would align them based
+    // on the size of the initializer which doesn't make sense as only single
+    // values are read.
+    unsigned PAlign = CGM.getTarget().getPointerAlign(0);
+    XVTable->setAlignment(getContext().toCharUnitsFromBits(PAlign).getQuantity());
+  }
 }
 
 bool ItaniumCXXABI::isVirtualOffsetNeededForVTableField(
@@ -1583,6 +1696,12 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
       Name, ArrayType, llvm::GlobalValue::ExternalLinkage);
   VTable->setUnnamedAddr(true);
 
+  if (CGM.getLangOpts().SplitVTables) {
+    const char *VTableSectionName = CGM.getTarget().getVTableSectionSpecifier();
+    if (VTableSectionName)
+      VTable->setSection(VTableSectionName);
+  }
+
   if (RD->hasAttr<DLLImportAttr>())
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
   else if (RD->hasAttr<DLLExportAttr>())
@@ -1591,24 +1710,117 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
   return VTable;
 }
 
+// Always returns a NEW xvtable
+llvm::GlobalVariable *ItaniumCXXABI::getAddrOfXVTable(StringRef MangledName, unsigned NumComponents) {
+  llvm::ArrayType *ArrayType = llvm::ArrayType::get(
+    CGM.getTypes().GetTrampolineType()->getPointerTo(),
+    NumComponents);
+
+  llvm::GlobalVariable *XVTable = CGM.CreateOrReplaceCXXRuntimeVariable(
+    MangledName, ArrayType, llvm::GlobalValue::InternalLinkage);
+  XVTable->setUnnamedAddr(true);
+
+  XVTable->setTrampolines(true);
+
+  XVTable->setSection(".tramp");
+
+  return XVTable;
+}
+
+llvm::Constant *ItaniumCXXABI::getAddrOfXVTableIndex(llvm::GlobalVariable *XVTable,
+                                                     uint64_t Index) {
+  llvm::Type *PtrDiffTy =
+    CGM.getTypes().ConvertType(CGM.getContext().getPointerDiffType());
+  // llvm::Constant *IndexConst = llvm::ConstantInt::get(PtrDiffTy, Index);
+  llvm::Value *Indices[] = {
+    llvm::ConstantInt::get(PtrDiffTy, 0),
+    llvm::ConstantInt::get(PtrDiffTy, Index)
+  };
+  return llvm::ConstantExpr::getInBoundsGetElementPtr(XVTable->getValueType(), XVTable, Indices);
+}
+
+
+llvm::GlobalVariable *ItaniumCXXABI::GetAddrOfClassName(const CXXRecordDecl *RD) {
+  SmallString<256> OutName;
+  llvm::raw_svector_ostream Out(OutName);
+  getMangleContext().mangleCXXRTTIName(CGM.getContext().getTagDeclType(RD), Out);
+  StringRef Name = OutName.str();
+
+  // We know that the mangled name of the type starts at index 4 of the
+  // mangled name of the typename, so we can just index into it in order to
+  // get the mangled name of the type.
+  llvm::Constant *Init = llvm::ConstantDataArray::getString(
+    CGM.getLLVMContext(), Name.substr(4));
+
+  llvm::GlobalVariable *GV =
+    CGM.CreateOrReplaceCXXRuntimeVariable(Name, Init->getType(),
+                                          llvm::GlobalValue::WeakAnyLinkage);
+
+  GV->setInitializer(Init);
+
+  return GV;
+}
+
 llvm::Value *ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
                                                       GlobalDecl GD,
                                                       Address This,
                                                       llvm::Type *Ty,
                                                       SourceLocation Loc) {
   GD = GD.getCanonicalDecl();
+  llvm::Type *BCTy = Ty->getPointerTo();
   Ty = Ty->getPointerTo()->getPointerTo();
   auto *MethodDecl = cast<CXXMethodDecl>(GD.getDecl());
-  llvm::Value *VTable = CGF.GetVTablePtr(This, Ty, MethodDecl->getParent());
+  const CXXRecordDecl *RD = MethodDecl->getParent();
+  llvm::Value *VTable;
+
+  llvm::Type *TrampolineTy = CGM.getTypes().GetTrampolineType();
+  bool ShouldSplitVTables = CGM.getLangOpts().SplitVTables;
+  if (ShouldSplitVTables) {
+    VTable = CGF.GetVTablePtr(This, 
+                              TrampolineTy->getPointerTo()->getPointerTo()->getPointerTo(),
+                              MethodDecl->getParent());
+    CharUnits VTablePtrAlign =
+      CGF.CGM.getDynamicOffsetAlignment(This.getAlignment(), RD,
+                                        CGF.getPointerAlign());
+    VTable = CGF.Builder.CreateLoad(Address(VTable, VTablePtrAlign));
+  } else {
+    VTable = CGF.GetVTablePtr(This, Ty, MethodDecl->getParent());
+  }
 
   if (CGF.SanOpts.has(SanitizerKind::CFIVCall))
     CGF.EmitVTablePtrCheckForCall(MethodDecl, VTable,
                                   CodeGenFunction::CFITCK_VCall, Loc);
 
-  uint64_t VTableIndex = CGM.getItaniumVTableContext().getMethodVTableIndex(GD);
-  llvm::Value *VFuncPtr =
-      CGF.Builder.CreateConstInBoundsGEP1_64(VTable, VTableIndex, "vfn");
-  return CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
+  uint64_t Index = CGM.getItaniumVTableContext().getMethodVTableIndex(GD);
+  uint64_t NumVFns = CGM.getItaniumVTableContext().getMaxNumVFuncs(RD);
+
+  llvm::ConstantInt *VTableIndex;
+  if (CGM.getCodeGenOpts().MarkVTables)
+    VTableIndex = llvm::ConstantVTIndex::get(
+      CGM.Int64Ty, Index, llvm::TrapInfo::getVCall(GetAddrOfClassName(RD), NumVFns));
+  else
+    VTableIndex = llvm::ConstantInt::get(CGM.Int64Ty, Index);
+
+  llvm::Value *VFuncPtr;
+  if (ShouldSplitVTables) 
+    VFuncPtr = 
+        CGF.Builder.CreateInBoundsGEP(TrampolineTy->getPointerTo(), VTable, VTableIndex, "vfn");
+  else
+    VFuncPtr = 
+        CGF.Builder.CreateConstInBoundsGEP1_64(VTable, VTableIndex->getZExtValue(), "vfn");
+
+  if (ShouldSplitVTables) {
+    // cast<llvm::Instruction>(VFuncPtr)->setTrapInfo(
+    //   llvm::TrapInfo::get(GetAddrOfClassName(RD), NumVFns));
+
+    return CGF.Builder.CreateBitCast(VFuncPtr, BCTy);
+  } else {
+    llvm::Instruction *LoadInst = 
+        CGF.Builder.CreateAlignedLoad(VFuncPtr, CGF.getPointerAlign());
+    // LoadInst->setTrapInfo(llvm::TrapInfo::get(GetAddrOfClassName(RD), NumVFns));
+
+    return LoadInst;
+  }
 }
 
 llvm::Value *ItaniumCXXABI::EmitVirtualDestructorCall(

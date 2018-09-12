@@ -153,10 +153,14 @@ public:
       : MangleContext(C, D, MK_Itanium) {}
 
   virtual void mangleCXXVTable(const CXXRecordDecl *RD, raw_ostream &) = 0;
+  virtual void mangleCXXXVTable(const CXXRecordDecl *RD, raw_ostream &) = 0;
   virtual void mangleCXXVTT(const CXXRecordDecl *RD, raw_ostream &) = 0;
   virtual void mangleCXXCtorVTable(const CXXRecordDecl *RD, int64_t Offset,
                                    const CXXRecordDecl *Type,
                                    raw_ostream &) = 0;
+  virtual void mangleCXXCtorXVTable(const CXXRecordDecl *RD, int64_t Offset,
+                                    const CXXRecordDecl *Type,
+                                    raw_ostream &) = 0;
   virtual void mangleItaniumThreadLocalInit(const VarDecl *D,
                                             raw_ostream &) = 0;
   virtual void mangleItaniumThreadLocalWrapper(const VarDecl *D,

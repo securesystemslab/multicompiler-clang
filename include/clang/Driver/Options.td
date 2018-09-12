@@ -533,6 +533,7 @@ def fdiagnostics_show_template_tree : Flag<["-"], "fdiagnostics-show-template-tr
     HelpText<"Print a template comparison tree for differing templates">;
 def fdeclspec : Flag<["-"], "fdeclspec">, Group<f_clang_Group>,
   HelpText<"Allow __declspec as a keyword">, Flags<[CC1Option]>;
+def fdiversify : Flag<["-"], "fdiversify">, Group<f_clang_Group>;
 def fdollars_in_identifiers : Flag<["-"], "fdollars-in-identifiers">, Group<f_Group>,
   HelpText<"Allow '$' in identifiers">, Flags<[CC1Option]>;
 def fdwarf2_cfi_asm : Flag<["-"], "fdwarf2-cfi-asm">, Group<clang_ignored_f_Group>;
@@ -640,6 +641,12 @@ def fsanitize_cfi_cross_dso : Flag<["-"], "fsanitize-cfi-cross-dso">,
 def fno_sanitize_cfi_cross_dso : Flag<["-"], "fno-sanitize-cfi-cross-dso">,
                                  Group<f_clang_Group>, Flags<[CC1Option]>,
                                  HelpText<"Disable control flow integrity (CFI) checks for cross-DSO calls.">;
+def fsanitize_debug_crosscheck : Joined<["-"], "fsanitize-debug-crosscheck">,
+                                 Group<f_clang_Group>, Flags<[CC1Option]>,
+                                 HelpText<"Enable debug implementation of cross-checking">;
+def fno_sanitize_debug_crosscheck : Joined<["-"], "fno-sanitize-debug-crosscheck">,
+                                    Group<f_clang_Group>, Flags<[CC1Option]>,
+                                    HelpText<"Disable debug implementation of cross-checking (default)">;
 def funsafe_math_optimizations : Flag<["-"], "funsafe-math-optimizations">,
   Group<f_Group>;
 def fno_unsafe_math_optimizations : Flag<["-"], "fno-unsafe-math-optimizations">,
@@ -2127,6 +2134,15 @@ defm stack_arrays : BooleanFFlag<"stack-arrays">, Group<gfortran_Group>;
 defm underscoring : BooleanFFlag<"underscoring">, Group<gfortran_Group>;
 defm whole_file : BooleanFFlag<"whole-file">, Group<gfortran_Group>;
 
+// Multicompiler options
+def multicompiler_Group : OptionGroup<"Multicompiler Group">;
+def fvtable_rando : Flag<["-"], "fvtable-rando">, Group<multicompiler_Group>;
+def fplt_rando : Flag<["-"], "fplt-rando">, Group<multicompiler_Group>;
+def fcode_pointer_protection : Flag<["-"], "fcode-pointer-protection">, Group<multicompiler_Group>;
+def fcode_pointer_protection_EQ : Joined<["-"], "fcode-pointer-protection=">, Group<multicompiler_Group>;
+def fdata_rando : Flag<["-"], "fdata-rando">, Group<multicompiler_Group>;
+def fcontext_sensitive_data_rando : Flag<["-"], "fcs-data-rando">, Group<multicompiler_Group>;
+def fheap_checks : Flag<["-"], "fheap-checks">, Group<multicompiler_Group>;
 
 include "CC1Options.td"
 
